@@ -26,7 +26,28 @@
                   (s/conformer second #(map (fn [[k# v#]] {::k k# ::v v#}) %)))
        (fn [] (gen/fmap (fn [m#] (apply concat m#)) (s/gen mspec#))))))
 
-;;(s/cat :fns (s/* symbol?) :kvs (s/spec :k keyword? :v any?) :trailing (s/? map?))
+(defmacro keys*
+  [& kspecs]
+  `(let [mspec# (s/keys ~@kspecs)]
+     (s/with-gen (s/& (s/* (s/cat ::k keyword? ::v any?)) ::kvs->map mspec#)
+       (fn [] (gen/fmap (fn [m#] (apply concat m#)) (s/gen mspec#))))))
+
+(defmacro keys*2
+  [& kspecs]
+  `(s/cat :kvs (s/keys* ~@kspecs)
+          :trailing (s/? map?)))
+
+(comment
+
+  (s/conform (keys*2 :req-un [::a ::c])
+             [:a 1 :c 2 {:b 3}])
+  
+  (s/conform (keys* :req-un [::a ::c])
+             [:a 1 :c 2])
+
+  (s/conform ::TM [:a 1 :b 2 {:c 3}])
+
+)
 
 (defn add [& {:keys [a b]}] (+ a b))
 
