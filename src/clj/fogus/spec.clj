@@ -15,6 +15,10 @@
 (s/def ::maps->map (s/conformer #(merge (:kvs %) (:trailing %))))
 
 (defmacro keys*+
+  "Initial form of a spec that accepts 1.11 like kwargs + trailing map.
+   Open questions:
+   - is an unformer possible?
+   - is a generator needed?"
   [& kspecs]
   `(s/conformer
     #(->> % 
@@ -41,9 +45,7 @@
 
   (s/conform (keys*+ :req-un [::a ::c])
              [{:a 1 :c 3}])
-  
-  (s/conform (keys* :req-un [::a ::c])
-             [{:b 3}])
+
 )
 
 (defn add [& {:keys [a b]}] (+ a b))
@@ -73,4 +75,21 @@
   (add {:a 1 :b 2})
 
   (add :a 1 {:b 2})
+)
+
+(defn- xform-keys*
+  "Happy path keys* transformer. WiP"
+  [[head & tail :as form]]
+  (cond (= head 'clojure.spec.alpha/keys*) (list* 'keys*+ tail)
+        (= head 'clojure.spec.alpha/cat)   (concat (list* head (butlast tail)) (let [[h & t] (last form)] [(list* 'keys*+ t)]))
+        :default form))
+
+(comment
+
+  (xform-keys* `(s/keys* :opt-un [::a ::c]))
+
+  (xform-keys* `(s/cat :arg1 int? :arg2 nil? :kwargs (s/keys* :opt-un [::a ::c])))
+
+  (xform-keys* `(s/cat :kwargs (s/keys* :opt-un [::a ::c])))
+
 )
