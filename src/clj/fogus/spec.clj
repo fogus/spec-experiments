@@ -53,10 +53,10 @@
 (s/def ::a any?)
 (s/def ::c any?)
 (s/fdef add :args (keys*+ :opt [::a ::c]))
-(stest/instrument `add)
 
 (comment
-
+  (stest/instrument `add)
+  
   (foo :a 1 :b 2)
   ;;=> [1 2]
   
@@ -109,16 +109,15 @@
   (meta #'foo)
 )
 
-(defn bar
+(defn kwargs-fn
   ([opts] opts)
   ([a b] [a b])
-  ([a b & {:as m}] m))
+  ([a b & {:as m}] [a b m]))
 
-(meta #'bar)
-
-(def al '([opts] [a b] [a b & {:as m}]))
-
-(sort-by count al)
+(defn no-kwargs-fn
+  ([opts] opts)
+  ([a b] [a b])
+  ([a b & opts] [a b opts]))
 
 (use 'clojure.spec.test.alpha)
 
@@ -133,9 +132,26 @@
 
 (defonce ^:private instrumented-vars (atom {}))
 
+(defn- args-table [v]
+  (let [arglists (->> v meta :arglists (sort-by count))]
+    (reduce (fn [table al]
+              (if (some #{'&} al)
+                (let [[_ decl :as restargs] (->> al (split-with (complement #{'&})) second)]
+                  (if (and (= 2 (count restargs))
+                           (map? decl))
+                    (assoc table :kwargs al)
+                    (assoc table :* al)))
+                (assoc table (count al) al)))
+            {}
+            arglists)))
+
+(args-table #'kwargs-fn)
+(args-table #'no-kwargs-fn)
+
 (defn- spec-checking-fn
   [v f fn-spec]
   (let [fn-spec (@#'s/maybe-spec fn-spec)
+        args-table (args-table v)
         conform! (fn [v role spec data args]
                    (let [conformed (s/conform spec data)]
                      (if (= ::s/invalid conformed)
@@ -156,9 +172,13 @@
      [& args]
      (if *instrument-enabled*
        (with-instrument-disabled
-         (when (:args fn-spec) (conform! v :args (:args fn-spec) args args))
-         (binding [*instrument-enabled* true]
-           (.applyTo ^clojure.lang.IFn f args)))
+         (let [args' (cond (get args-table (count args)) args
+                           (and (get args-table :kwargs)
+                                (map? (last args)))      (concat (butlast args) (-> args last seq flatten))
+                           :default                      args)]
+           (when (:args fn-spec) (conform! v :args (:args fn-spec) args' args))
+           (binding [*instrument-enabled* true]
+             (.applyTo ^clojure.lang.IFn f args))))
        (.applyTo ^clojure.lang.IFn f args)))))
 
 (defn- instrument-1
@@ -177,4 +197,51 @@
         (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
         (->sym v)))))
 
+(comment
+
+  (defn plus+ [& {:keys [a c]}] (+ a c))
+
+  (s/def ::a any?)
+  (s/def ::c any?)
+  (s/fdef plus+ :args (s/keys* :opt [::a ::c]))
+
+  (instrument-1 `plus+ {})
+
+  (plus+ :a 1 :c 2)
+  (plus+ :a 1 {:c 2})
+  (plus+ {:a 1 :c 2})
+)
+
+;;; Experiments below
+
+(defn- has-kwargs? [v]
+  (let [[_ decl :as restargs] (->> v
+                                   meta
+                                   :arglists
+                                   (sort-by count)
+                                   last
+                                   (split-with (complement #{'&}))
+                                   second)]
+    (and (= 2 (count restargs))
+         (map? decl))))
+
+(has-kwargs? #'kwargs-fn)
+(has-kwargs? #'no-kwargs-fn)
+
+
+(defn- apply-kwargs [f & args]
+  (let [args+ (concat (butlast args) (-> args last seq flatten))]
+    (.applyTo ^clojure.lang.IFn f args+)))
+
+;;(apply-kwargs bar 1 2 {:a 1 :b 2})
+
+(def thunk (fn
+             ([opts] (kwargs-fn opts))
+             ([a b]  (kwargs-fn a b))
+             ([a b & {:as m}]
+              (apply kwargs-fn a b (-> m seq flatten)))))
+
+(thunk {:a 1})
+(thunk 1 2)
+(thunk 1 2 {:a 1 :b 2})
 
