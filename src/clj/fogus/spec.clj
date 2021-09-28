@@ -154,7 +154,7 @@
 (args-table #'kwargs-fn)
 (args-table #'no-kwargs-fn)
 
-(defn- spec-checking-fn
+(defn- spec-checking-fn-cond
   [v f fn-spec]
   (let [fn-spec (@#'s/maybe-spec fn-spec)
         args-table (args-table v)
@@ -187,7 +187,7 @@
              (.applyTo ^clojure.lang.IFn f args))))
        (.applyTo ^clojure.lang.IFn f args)))))
 
-(defn- instrument-1
+(defn- instrument-1-cond
   [s opts]
   (when-let [v (resolve s)]
     (when-not (-> v meta :macro)
@@ -198,7 +198,7 @@
             ospec (or (instrument-choose-spec spec s opts)
                       (throw (no-fspec v spec)))
             ofn (instrument-choose-fn to-wrap ospec s opts)
-            checked (spec-checking-fn v ofn ospec)]
+            checked (spec-checking-fn-cond v ofn ospec)]
         (alter-var-root v (constantly checked))
         (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
         (->sym v)))))
@@ -211,7 +211,7 @@
   (s/def ::c any?)
   (s/fdef plus+ :args (s/keys* :opt [::a ::c]))
 
-  (instrument-1 `plus+ {})
+  (instrument-1-cond `plus+ {})
 
   (plus+ :a 1 :c 2)
   (plus+ :a 1 {:c 2})
@@ -239,7 +239,9 @@
   (let [args+ (concat (butlast args) (-> args last seq flatten))]
     (.applyTo ^clojure.lang.IFn f args+)))
 
-;;(apply-kwargs bar 1 2 {:a 1 :b 2})
+(apply-kwargs kwargs-fn 1 2 {:a 1 :b 2})
+
+;;; macro version
 
 (def thunk (fn
              ([opts] (kwargs-fn opts))
@@ -250,4 +252,48 @@
 (thunk {:a 1})
 (thunk 1 2)
 (thunk 1 2 {:a 1 :b 2})
+
+(defn- spec-checking-fn-macro
+  [v f fn-spec]
+  (let [fn-spec (@#'s/maybe-spec fn-spec)
+        conform! (fn [v role spec data args]
+                   (let [conformed (s/conform spec data)]
+                     (if (= ::s/invalid conformed)
+                       (let [caller (->> (.getStackTrace (Thread/currentThread))
+                                         stacktrace-relevant-to-instrument
+                                         first)
+                             ed (merge (assoc (s/explain-data* spec [] [] [] data)
+                                         ::s/fn (->sym v)
+                                         ::s/args args
+                                         ::s/failure :instrument)
+                                       (when caller
+                                         {::caller (dissoc caller :class :method)}))]
+                         (throw (ex-info
+                                 (str "Call to " v " did not conform to spec.")
+                                 ed)))
+                       conformed)))]
+    (fn
+     [& args]
+     (if *instrument-enabled*
+       (with-instrument-disabled
+         (when (:args fn-spec) (conform! v :args (:args fn-spec) args args))
+         (binding [*instrument-enabled* true]
+           (.applyTo ^clojure.lang.IFn f args)))
+       (.applyTo ^clojure.lang.IFn f args)))))
+
+(defn- instrument-1-macro
+  [s opts]
+  (when-let [v (resolve s)]
+    (when-not (-> v meta :macro)
+      (let [spec (s/get-spec v)
+            {:keys [raw wrapped]} (get @instrumented-vars v)
+            current @v
+            to-wrap (if (= wrapped current) raw current)
+            ospec (or (instrument-choose-spec spec s opts)
+                      (throw (no-fspec v spec)))
+            ofn (instrument-choose-fn to-wrap ospec s opts)
+            checked (spec-checking-fn-macro v ofn ospec)]
+        (alter-var-root v (constantly checked))
+        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
+        (->sym v)))))
 
