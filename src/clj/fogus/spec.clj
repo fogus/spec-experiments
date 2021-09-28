@@ -132,7 +132,13 @@
 
 (defonce ^:private instrumented-vars (atom {}))
 
-(defn- args-table [v]
+(defn- args-table
+  "Builds a map describing the arities found in a var's :arglists metadata. For strict arities
+  the parameter count maps to the arglist. However, for variadic functions there are two
+  possible mappings. First, the key :* maps to an arglist declared with named varargs
+  or with a sequence destructuring form. On the other hand, the key :kwargs maps to an arglist
+  declared as taking keyword arguments."
+  [v]
   (let [arglists (->> v meta :arglists (sort-by count))]
     (reduce (fn [table al]
               (if (some #{'&} al)
