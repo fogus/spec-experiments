@@ -3,6 +3,8 @@
             [clojure.spec.gen.alpha :as gen]
             [clojure.spec.test.alpha :as stest]))
 
+(set! *warn-on-reflection* true)
+
 (defn foo [& {:keys [a b]}]
   [a b])
 
@@ -243,6 +245,17 @@
 
 ;;; macro version
 
+(s/def ::a any?)
+(s/def ::c any?)
+
+(s/fdef kwargs-fn
+  :args (s/alt :unary  (s/cat :a any?)
+               :binary (s/cat :a any?
+                              :b any?)
+               :variadic (s/cat :a any?
+                                :b any?
+                                :kwargs (s/keys* :opt-un [::a ::c]))))
+
 (def thunk (fn
              ([opts] (kwargs-fn opts))
              ([a b]  (kwargs-fn a b))
@@ -252,6 +265,39 @@
 (thunk {:a 1})
 (thunk 1 2)
 (thunk 1 2 {:a 1 :b 2})
+
+(let [fn-spec (or (instrument-choose-spec (s/get-spec #'kwargs-fn) 'kwargs-fn {})
+                  (throw (no-fspec #'kwargs-fn (s/get-spec #'kwargs-fn))))]
+  '(def thunk2
+    (fn
+      ([opts]
+       (if *instrument-enabled*
+         (with-instrument-disabled
+           (when (:args fn-spec) (conform! v :args (:args fn-spec) args args))
+           (binding [*instrument-enabled* true]
+             (.applyTo ^clojure.lang.IFn f args)))
+         (.applyTo ^clojure.lang.IFn f args)))
+      ([a b]
+       (if *instrument-enabled*
+         (with-instrument-disabled
+           (when (:args fn-spec) (conform! v :args (:args fn-spec) args args))
+           (binding [*instrument-enabled* true]
+             (.applyTo ^clojure.lang.IFn f args)))
+         (.applyTo ^clojure.lang.IFn f args)))
+      ([a b & {:as m}]
+       (if *instrument-enabled*
+         (with-instrument-disabled
+           (when (:args fn-spec) (conform! v :args (:args fn-spec) args args))
+           (binding [*instrument-enabled* true]
+             (.applyTo ^clojure.lang.IFn f args)))
+         (.applyTo ^clojure.lang.IFn f args)))))
+
+  (:args fn-spec)
+  (s/conform (:args fn-spec) [1 2]))
+
+
+
+(declare gen-bodies)
 
 (defn- spec-checking-fn-macro
   [v f fn-spec]
@@ -296,4 +342,46 @@
         (alter-var-root v (constantly checked))
         (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
         (->sym v)))))
+
+(defn- kwargs [arglist]
+  (let [[_ decl :as restargs] (->> arglist
+                                   (split-with (complement #{'&}))
+                                   second)]
+    (and (= 2 (count restargs))
+         (map? decl)
+         decl)))
+
+(defn- gen-body [v f fn-spec arglist]
+  {:args arglist
+   :data arglist})
+
+(defn- gen-kwargs-body [v f fn-spec arglist decl]
+  (let [as-name (or (:as decl) (gensym "as"))
+        decl (assoc decl :as as-name :zzzzzzzzz 11)
+        head-args (->> arglist (take-while (complement #{'&})) vec)]
+    {:args (conj head-args as-name)
+     :data `(->> ~as-name seq flatten (concat ~head-args))
+     :arglist (-> arglist butlast vec (conj decl))}))
+
+(defn- gen-bodies [v f fn-spec]
+  (list* `fn
+         (map (fn [arglist]
+                (let [body-tmpl (if-let [decl (kwargs arglist)]
+                                  (gen-kwargs-body v f fn-spec arglist decl)
+                                  (gen-body v f fn-spec arglist))]
+                  `(~(or (:arglist body-tmpl) arglist)
+                    (if *instrument-enabled*
+                      (with-instrument-disabled
+                        (when (:args ~fn-spec) (conform! ~v :args (:args ~fn-spec) ~(:data body-tmpl) ~(:args body-tmpl)))
+                        (binding [*instrument-enabled* true]
+                          (.applyTo ^clojure.lang.IFn ~f (seq ~(:args body-tmpl)))))
+                      (.applyTo ^clojure.lang.IFn ~f (seq ~(:args body-tmpl)))))))
+              (->> v meta :arglists (sort-by count)))))
+
+(.applyTo ^clojure.lang.IFn kwargs-fn '({:a 1}))
+
+(gen-bodies #'kwargs-fn kwargs-fn {})
+
+
+
 
