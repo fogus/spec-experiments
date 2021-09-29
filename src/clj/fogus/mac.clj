@@ -122,12 +122,11 @@
       anm 'm]
   (gen-body {:data `(concat ~pre (-> ~anm seq flatten)) :args '[a b m] :var #'kwargs-fn :spec fspc}))
 
-(defn- kwargs [arglist]
+(defn- varargs [arglist]
   (let [[_ decl :as restargs] (->> arglist
                                    (split-with (complement #{'&}))
                                    second)]
     (and (= 2 (count restargs))
-         (map? decl)
          decl)))
 
 (defn- kwargs-context [v f fn-spec arglist decl]
@@ -137,6 +136,15 @@
     {:args    (conj head-args as-name)
      :data    `(->> ~as-name seq flatten (concat ~head-args))
      :arglist (-> arglist butlast vec (conj decl))
+     :spec    fn-spec
+     :var     v}))
+
+(defn- varargs-context [v f fn-spec arglist decl]
+  (if (map? decl)
+    (kwargs-context v f fn-spec arglist decl)
+    {:arglist '[& args]
+     :data    'args
+     :args    'args
      :spec    fn-spec
      :var     v}))
 
@@ -151,8 +159,8 @@
     (list* `fn
            (if (seq arglists)
              (map (fn [arglist]
-                    (let [context (if-let [decl (kwargs arglist)]
-                                    (kwargs-context v f fn-spec arglist decl)
+                    (let [context (if-let [decl (varargs arglist)]
+                                    (varargs-context v f fn-spec arglist decl)
                                     (args-context   v f fn-spec arglist))]
                       `(~(or (:arglist context) arglist)
                         ~(gen-body context))))
@@ -163,6 +171,9 @@
                            :var  v
                            :spec fn-spec}))))))
 
+(varargs '[& args])
+(varargs '[& {:as m}])
+(varargs '[& [head & tail]])
 (gen-body {:args 'args :data 'args :var #'kwargs-fn :spec fspc})
 (gen-bodies #'kwargs-fn kwargs-fn fspc)
 
@@ -173,18 +184,18 @@
 (comment
 
   ;; Generated thunk
-  (fn ([opts]
-       (if *instrument-enabled*
-         (with-instrument-disabled
-           (when (:args 'ARGS_SPEC_OBJECT)
-             (conform! #'fogus.mac/kwargs-fn
-                       :args (:args 'ARGS_SPEC_OBJECT)
-                       [opts]
-                       [opts]))
-           (binding [*instrument-enabled* true]
-             (.applyTo fogus.mac/kwargs-fn (seq [opts]))))
-         (.applyTo fogus.mac/kwargs-fn (clojure.core/seq [opts]))))
-
+  (fn
+    ([opts]
+     (if *instrument-enabled*
+       (with-instrument-disabled
+         (when (:args 'ARGS_SPEC_OBJECT)
+           (conform! #'fogus.mac/kwargs-fn
+                     :args (:args 'ARGS_SPEC_OBJECT)
+                     [opts]
+                     [opts]))
+         (binding [*instrument-enabled* true]
+           (.applyTo fogus.mac/kwargs-fn (seq [opts]))))
+       (.applyTo fogus.mac/kwargs-fn (seq [opts]))))
     ([a b]
      (if *instrument-enabled*
        (with-instrument-disabled
