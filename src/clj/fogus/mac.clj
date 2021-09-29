@@ -44,6 +44,7 @@
                   (throw (no-fspec #'kwargs-fn (s/get-spec #'kwargs-fn))))]
   (s/conform (:args fn-spec) [1 2 :a 42 :c 13]))
 
+;; This is what should be generated
 (def checked-kwargs-fn
   (let [fn-spec (or (instrument-choose-spec (s/get-spec #'kwargs-fn) 'kwargs-fn {})
                     (throw (no-fspec #'kwargs-fn (s/get-spec #'kwargs-fn))))
@@ -101,4 +102,69 @@
 ;;(checked-kwargs-fn 1 "a" {:a 42 :c 108}) ;; fails as expected
 ;;(checked-kwargs-fn 1 2 {:a 42 :b "a" :c 108}) ;; fails but in weird way
 
+(defn- gen-body [context]
+  `(if *instrument-enabled*
+     (with-instrument-disabled
+       (when (:args fn-spec) (conform! ~(:var context)                   ;; var
+                                       :args (:args ~(:spec context))    ;; spec object
+                                       ~(:data context)                  ;; data to check
+                                       ~(:args context)))                ;; args
+       (binding [*instrument-enabled* true]
+         (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context))))) ;; seq of arglist
+     (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context)))))
 
+(def fspc (or (instrument-choose-spec (s/get-spec #'kwargs-fn) 'kwargs-fn {}) (throw (no-fspec #'kwargs-fn (s/get-spec #'kwargs-fn)))))
+
+(gen-body {:data '[opts] :args '[opts] :var #'kwargs-fn :spec fspc})
+
+(let [pre '[a b]
+      anm 'm]
+  (gen-body {:data `(concat ~pre (-> ~anm seq flatten)) :args '[a b m] :var #'kwargs-fn :spec fspc}))
+
+(defn- kwargs [arglist]
+  (let [[_ decl :as restargs] (->> arglist
+                                   (split-with (complement #{'&}))
+                                   second)]
+    (and (= 2 (count restargs))
+         (map? decl)
+         decl)))
+
+(defn- kwargs-context [v f fn-spec arglist decl]
+  (let [as-name (or (:as decl) (gensym "as"))
+        decl (assoc decl :as as-name)
+        head-args (->> arglist (take-while (complement #{'&})) vec)]
+    {:args    (conj head-args as-name)
+     :data    `(->> ~as-name seq flatten (concat ~head-args))
+     :arglist (-> arglist butlast vec (conj decl))
+     :spec    fn-spec
+     :var     v}))
+
+(defn- args-context [v f fn-spec arglist]
+  {:args arglist
+   :data arglist
+   :spec fn-spec
+   :var  v})
+
+(defn- gen-bodies [v f fn-spec]
+  (let [arglists (->> v meta :arglists (sort-by count))]
+    (list* `fn
+           (if (seq arglists)
+             (map (fn [arglist]
+                    (let [context (if-let [decl (kwargs arglist)]
+                                    (kwargs-context v f fn-spec arglist decl)
+                                    (args-context   v f fn-spec arglist))]
+                      `(~(or (:arglist context) arglist)
+                        ~(gen-body context))))
+                  arglists)
+             `(~'[& args]
+               ~(gen-body {:args 'args
+                           :data 'args
+                           :var  v
+                           :spec fn-spec}))))))
+
+(gen-body {:args 'args :data 'args :var #'kwargs-fn :spec fspc})
+(gen-bodies #'kwargs-fn kwargs-fn {})
+
+;; TODO: handle varargs case
+;; TODO: error handling
+;; TODO: modify spec-checking-fn to include gen-bodies
