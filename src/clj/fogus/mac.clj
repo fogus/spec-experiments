@@ -172,6 +172,7 @@
 
 (comment
 
+  ;; Generated thunk
   (fn ([opts]
        (if *instrument-enabled*
          (with-instrument-disabled
