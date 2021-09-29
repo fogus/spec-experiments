@@ -105,10 +105,11 @@
 (defn- gen-body [context]
   `(if *instrument-enabled*
      (with-instrument-disabled
-       (when (:args fn-spec) (conform! ~(:var context)                   ;; var
-                                       :args (:args ~(:spec context))    ;; spec object
-                                       ~(:data context)                  ;; data to check
-                                       ~(:args context)))                ;; args
+       (when (:args ~(:spec context))
+         (conform! ~(:var context)                   ;; var
+                   :args (:args ~(:spec context))    ;; spec object
+                   ~(:data context)                  ;; data to check
+                   ~(:args context)))                ;; args
        (binding [*instrument-enabled* true]
          (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context))))) ;; seq of arglist
      (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context)))))
@@ -163,8 +164,47 @@
                            :spec fn-spec}))))))
 
 (gen-body {:args 'args :data 'args :var #'kwargs-fn :spec fspc})
-(gen-bodies #'kwargs-fn kwargs-fn {})
+(gen-bodies #'kwargs-fn kwargs-fn fspc)
 
 ;; TODO: handle varargs case
 ;; TODO: error handling
 ;; TODO: modify spec-checking-fn to include gen-bodies
+
+(comment
+
+  (fn ([opts]
+       (if *instrument-enabled*
+         (with-instrument-disabled
+           (when (:args 'ARGS_SPEC_OBJECT)
+             (conform! #'fogus.mac/kwargs-fn
+                       :args (:args 'ARGS_SPEC_OBJECT)
+                       [opts]
+                       [opts]))
+           (binding [*instrument-enabled* true]
+             (.applyTo fogus.mac/kwargs-fn (seq [opts]))))
+         (.applyTo fogus.mac/kwargs-fn (clojure.core/seq [opts]))))
+
+    ([a b]
+     (if *instrument-enabled*
+       (with-instrument-disabled
+         (when (:args 'ARGS_SPEC_OBJECT)
+           (conform! #'fogus.mac/kwargs-fn
+                     :args (:args 'ARGS_SPEC_OBJECT)
+                     [a b]
+                     [a b]))
+         (binding [*instrument-enabled* true]
+           (.applyTo fogus.mac/kwargs-fn (seq [a b]))))
+       (.applyTo fogus.mac/kwargs-fn (seq [a b]))))
+
+    ([a b & {:as m}]
+     (if *instrument-enabled*
+       (with-instrument-disabled
+         (when (:args 'ARGS_SPEC_OBJECT)
+           (conform! #'fogus.mac/kwargs-fn
+                     :args (:args 'ARGS_SPEC_OBJECT)
+                     (->> m seq flatten (concat [a b]))
+                     [a b m]))
+         (binding [*instrument-enabled* true]
+           (.applyTo fogus.mac/kwargs-fn (seq [a b m]))))
+       (.applyTo fogus.mac/kwargs-fn (seq [a b m])))))
+)
