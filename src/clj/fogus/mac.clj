@@ -139,14 +139,19 @@
      :spec    fn-spec
      :var     v}))
 
+(defn hpl [a b & args]
+  [a b args])
+
 (defn- varargs-context [v f fn-spec arglist decl]
   (if (map? decl)
     (kwargs-context v f fn-spec arglist decl)
-    {:arglist '[& args]
-     :data    'args
-     :args    'args
-     :spec    fn-spec
-     :var     v}))
+    (let [head-args (->> arglist (take-while (complement #{'&})) vec)
+          args-sym  'args]
+      {:arglist (vec (concat head-args '[& args]))
+       :data    `(list* ~@head-args ~args-sym)
+       :args    `(list* ~@head-args ~args-sym)
+       :spec    fn-spec
+       :var     v})))
 
 (defn- args-context [v f fn-spec arglist]
   {:args arglist
@@ -176,8 +181,8 @@
 (varargs '[& [head & tail]])
 (gen-body {:args 'args :data 'args :var #'kwargs-fn :spec fspc})
 (gen-bodies #'kwargs-fn kwargs-fn fspc)
+(gen-bodies #'no-kwargs-fn no-kwargs-fn fspc)
 
-;; TODO: handle varargs case
 ;; TODO: error handling
 ;; TODO: modify spec-checking-fn to include gen-bodies
 
