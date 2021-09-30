@@ -102,17 +102,23 @@
 ;;(checked-kwargs-fn 1 "a" {:a 42 :c 108}) ;; fails as expected
 ;;(checked-kwargs-fn 1 2 {:a 42 :b "a" :c 108}) ;; fails but in weird way
 
+;; Macros
+
 (defn- gen-body [context]
   `(if *instrument-enabled*
      (with-instrument-disabled
+       (println "ENABLED? " ~context)
        (when (:args ~(:spec context))
+         (println "CHECKING")
          (conform! ~(:var context)                   ;; var
                    :args (:args ~(:spec context))    ;; spec object
                    ~(:data context)                  ;; data to check
                    ~(:args context)))                ;; args
        (binding [*instrument-enabled* true]
          (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context))))) ;; seq of arglist
-     (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context)))))
+     (do
+       (println "DISABLED")
+       (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context))))))
 
 (def fspc (or (instrument-choose-spec (s/get-spec #'kwargs-fn) 'kwargs-fn {}) (throw (no-fspec #'kwargs-fn (s/get-spec #'kwargs-fn)))))
 
@@ -138,9 +144,6 @@
      :arglist (-> arglist butlast vec (conj decl))
      :spec    fn-spec
      :var     v}))
-
-(defn hpl [a b & args]
-  [a b args])
 
 (defn- varargs-context [v f fn-spec arglist decl]
   (if (map? decl)
@@ -176,52 +179,164 @@
                            :var  v
                            :spec fn-spec}))))))
 
+(defn just-varargs [& args]
+  args)
+
 (varargs '[& args])
 (varargs '[& {:as m}])
 (varargs '[& [head & tail]])
 (gen-body {:args 'args :data 'args :var #'kwargs-fn :spec fspc})
 (gen-bodies #'kwargs-fn kwargs-fn fspc)
 (gen-bodies #'no-kwargs-fn no-kwargs-fn fspc)
+(gen-bodies #'just-varargs just-varargs fspc)
 
 ;; TODO: error handling
 ;; TODO: modify spec-checking-fn to include gen-bodies
 
 (comment
-
+  (def conform!
+    (fn [v role spec data args]
+                   (let [conformed (s/conform spec data)]
+                     (if (= ::s/invalid conformed)
+                       (let [caller (->> (.getStackTrace (Thread/currentThread))
+                                         stacktrace-relevant-to-instrument
+                                         first)
+                             ed (merge (assoc (s/explain-data* spec [] [] [] data)
+                                              ::s/fn (->sym v)
+                                              ::s/args args
+                                              ::s/failure :instrument)
+                                       (when caller
+                                         {::caller (dissoc caller :class :method)}))]
+                         (throw (ex-info
+                                 (str "Call to " v " did not conform to spec.")
+                                 ed)))
+                       conformed))))
+  
   ;; Generated thunk
-  (fn
-    ([opts]
-     (if *instrument-enabled*
-       (with-instrument-disabled
-         (when (:args 'ARGS_SPEC_OBJECT)
-           (conform! #'fogus.mac/kwargs-fn
-                     :args (:args 'ARGS_SPEC_OBJECT)
-                     [opts]
-                     [opts]))
-         (binding [*instrument-enabled* true]
-           (.applyTo fogus.mac/kwargs-fn (seq [opts]))))
-       (.applyTo fogus.mac/kwargs-fn (seq [opts]))))
-    ([a b]
-     (if *instrument-enabled*
-       (with-instrument-disabled
-         (when (:args 'ARGS_SPEC_OBJECT)
-           (conform! #'fogus.mac/kwargs-fn
-                     :args (:args 'ARGS_SPEC_OBJECT)
-                     [a b]
-                     [a b]))
-         (binding [*instrument-enabled* true]
-           (.applyTo fogus.mac/kwargs-fn (seq [a b]))))
-       (.applyTo fogus.mac/kwargs-fn (seq [a b]))))
+  (def dothunk
+    (fn
+      ([opts]
+       (if *instrument-enabled*
+         (with-instrument-disabled
+           (when (:args fspc)
+             (conform! #'fogus.mac/kwargs-fn
+                       :args (:args fspc)
+                       [opts]
+                       [opts]))
+           (binding [*instrument-enabled* true]
+             (.applyTo fogus.mac/kwargs-fn (seq [opts]))))
+         (.applyTo fogus.mac/kwargs-fn (seq [opts]))))
+      ([a b]
+       (if *instrument-enabled*
+         (with-instrument-disabled
+           (when (:args fspc)
+             (conform! #'fogus.mac/kwargs-fn
+                       :args (:args fspc)
+                       [a b]
+                       [a b]))
+           (binding [*instrument-enabled* true]
+             (.applyTo fogus.mac/kwargs-fn (seq [a b]))))
+         (.applyTo fogus.mac/kwargs-fn (seq [a b]))))
 
-    ([a b & {:as m}]
-     (if *instrument-enabled*
-       (with-instrument-disabled
-         (when (:args 'ARGS_SPEC_OBJECT)
-           (conform! #'fogus.mac/kwargs-fn
-                     :args (:args 'ARGS_SPEC_OBJECT)
-                     (->> m seq flatten (concat [a b]))
-                     [a b m]))
-         (binding [*instrument-enabled* true]
-           (.applyTo fogus.mac/kwargs-fn (seq [a b m]))))
-       (.applyTo fogus.mac/kwargs-fn (seq [a b m])))))
+      ([a b & {:as m}]
+       (if *instrument-enabled*
+         (with-instrument-disabled
+           (when (:args fspc)
+             (conform! #'fogus.mac/kwargs-fn
+                       :args (:args fspc)
+                       (->> m seq flatten (concat [a b]))
+                       [a b m]))
+           (binding [*instrument-enabled* true]
+             (.applyTo fogus.mac/kwargs-fn (seq [a b m]))))
+         (.applyTo fogus.mac/kwargs-fn (seq [a b m]))))))
+
+  (dothunk 1)
+  (dothunk 1 2)
+  (dothunk 1 2 {:a 1})
+  (dothunk 1 2 {:a 1 :b 2})
+  (dothunk 1 2 {:a 1 :b 2 :c 3})
+  (dothunk 1 2 {:a 1 :b 2 :c 3 :d 4})
+
+  ;; spec fails
+  (dothunk 1 :b)
+  (dothunk 1 2 {:a 1 :b "b"})
 )
+
+;; integration
+
+(def conform!
+  (fn [v role spec data args]
+    (let [conformed (s/conform spec data)]
+      (if (= ::s/invalid conformed)
+        (let [caller (->> (.getStackTrace (Thread/currentThread))
+                          stacktrace-relevant-to-instrument
+                          first)
+              ed (merge (assoc (s/explain-data* spec [] [] [] data)
+                               ::s/fn (->sym v)
+                               ::s/args args
+                               ::s/failure :instrument)
+                        (when caller
+                          {::caller (dissoc caller :class :method)}))]
+          (throw (ex-info
+                  (str "Call to " v " did not conform to spec.")
+                  ed)))
+        conformed))))
+
+(defmacro spec-checking-fn-macro
+  [v f fn-spec]
+  (let [fn-spec (@#'s/maybe-spec fn-spec)]
+    (gen-bodies v f fn-spec)))
+
+(macroexpand-1 `(spec-checking-fn-macro ~(var kwargs-fn) kwargs-fn ~fspc))
+
+(defn- instrument-1-macro
+  [s opts]
+  (when-let [v (resolve s)]
+    (when-not (-> v meta :macro)
+      (let [spec (s/get-spec v)
+            {:keys [raw wrapped]} (get @instrumented-vars v)
+            current @v
+            to-wrap (if (= wrapped current) raw current)
+            ospec (or (instrument-choose-spec spec s opts)
+                      (throw (no-fspec v spec)))
+            ofn (instrument-choose-fn to-wrap ospec s opts)
+            checked (spec-checking-fn-macro v ofn ospec)]
+        (alter-var-root v (constantly checked))
+        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
+        (->sym v)))))
+
+(comment
+
+  (def things
+    (let [s `kwargs-fn
+          opts {}
+          v #'kwargs-fn
+          spec (s/get-spec v)
+          to-wrap (:raw (get @instrumented-vars #'kwargs-fn))
+          ospec (or (instrument-choose-spec spec s opts)
+                    (throw (no-fspec v spec)))
+          ofn (instrument-choose-fn to-wrap ospec s opts)]
+      {:sfn   (spec-checking-fn-macro v ofn ospec)
+       :spec  ospec
+       :var   v
+       :ofn   ofn
+       :mspec (@#'s/maybe-spec ospec)
+       :form  (macroexpand-1 `(spec-checking-fn-macro ~v ~ofn ~ospec))}))
+  
+  (-> things :form)
+ 
+  (def ff (:sfn things))
+  (ff 1)
+  (ff 1 2)
+  (ff 1 2 {:a 10})
+  (ff 1 2 {:a 10 :b 11})
+  (ff 1 2 {:a 10 :b 11 :c 12})
+  (ff 1 "b")
+  
+  (instrument-1-macro `kwargs-fn {})
+
+  (kwargs-fn 1)
+
+)
+
+
