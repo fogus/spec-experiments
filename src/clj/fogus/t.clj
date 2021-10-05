@@ -117,8 +117,8 @@
                    ~(:data context)                  ;; data to check
                    ~(:args context)))                ;; args
        (binding [*instrument-enabled* true]
-         (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context))))) ;; seq of arglist
-     (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context)))))
+         (.applyTo ^clojure.lang.IFn ~(:fun context) (seq ~(:args context))))) ;; seq of arglist
+     (.applyTo ^clojure.lang.IFn ~(:fun context) (seq ~(:args context)))))
 
 (defn- fetch-spec [s]
   (@#'s/maybe-spec s))
@@ -149,16 +149,21 @@
             current @v
             to-wrap (if (= wrapped current) raw current)
             checked (gen-thunk s v to-wrap opts)]
-;;        (alter-var-root v (constantly checked))
-;;        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
-;;        (->sym v)
-        checked))))
+        (alter-var-root v (constantly (eval checked)))
+        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
+        (->sym v)))))
 
 (comment
   ((->
     (instrument-1 `kwargs-fn {})
     eval)
    1 2 :a 1)
+
+  (kwargs-fn 1)
+  (kwargs-fn 1 2)
+  (kwargs-fn 1 2 :a 1)
+  (kwargs-fn 1 2 :a 1 {:b 2})
+  (kwargs-fn 1 :B)
   
   ((instrument-1 `kwargs-fn {}) 1)
   ((instrument-1 `kwargs-fn {}) 1 2)
