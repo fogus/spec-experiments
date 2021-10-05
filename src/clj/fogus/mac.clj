@@ -321,7 +321,8 @@
        :var   v
        :ofn   ofn
        :mspec (@#'s/maybe-spec ospec)
-       :form  (macroexpand-1 `(spec-checking-fn-macro ~v ~ofn ~ospec))}))
+;;       :form  (macroexpand-1 `(spec-checking-fn-macro ~v ~ofn ~ospec))
+       }))
   
   (-> things :form)
  
