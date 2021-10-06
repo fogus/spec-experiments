@@ -150,10 +150,9 @@
             current @v
             to-wrap (if (= wrapped current) raw current)
             checked (gen-thunk s v to-wrap opts)]
-        ;;(alter-var-root v (constantly (eval checked)))
-        ;;(swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
-        ;;(->sym v)
-        checked))))
+        (alter-var-root v (constantly (eval checked)))
+        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
+        (->sym v)))))
 
 (comment
   ((->
