@@ -207,10 +207,9 @@
             checked (spec-checking-fn v ofn ospec)
             thunk (eval (gen-thunk v))
             wrapped (thunk checked)]
-;;        (alter-var-root v (constantly wrapped))
-;;        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
-;;        (->sym v)
-        (gen-thunk v)))))
+        (alter-var-root v (constantly wrapped))
+        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
+        (->sym v)))))
 
 (comment
   (instrument-1 `add10 {})
