@@ -50,6 +50,16 @@
 
 (defonce ^:private instrumented-vars (atom {}))
 
+(defn- unstrument-1
+  [s]
+  (when-let [v (resolve s)]
+    (when-let [{:keys [raw wrapped]} (get @instrumented-vars v)]
+      (swap! instrumented-vars dissoc v)
+      (let [current @v]
+        (when (= wrapped current)
+          (alter-var-root v (constantly raw))
+          (->sym v))))))
+
 ;; test funs
 
 (defn kwargs-fn
@@ -217,4 +227,7 @@
   (kwargs-fn 1 2 :a 1)
   (kwargs-fn 1 2 :a 1 {:b 2})
   (kwargs-fn 1 :B)
-  (kwargs-fn 1 2 :a 1 {:b :B}))
+  (kwargs-fn 1 2 :a 1 {:b :B})
+
+  (unstrument-1 `kwargs-fn)
+)
