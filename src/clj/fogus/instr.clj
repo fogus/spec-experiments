@@ -136,7 +136,7 @@
         decl (assoc decl :as as-name)
         head-args (->> arglist (take-while (complement #{'&})) vec)]
     {:args    (conj head-args as-name)
-     :data    `[(->> ~as-name seq flatten (concat ~head-args))]
+     :data    `[~@head-args (->> ~as-name seq flatten)]
      :arglist (-> arglist butlast vec (conj decl))
      :decl    decl}))
 
