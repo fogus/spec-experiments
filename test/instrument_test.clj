@@ -51,3 +51,6 @@
 
 ;;; Tests
 
+(deftest test-instrument
+  (testing "that a function taking keyword args is spec'd and checked at runtime"
+    (is (= ))))

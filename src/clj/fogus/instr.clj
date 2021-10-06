@@ -1,12 +1,7 @@
 (ns fogus.instr
   (:require [clojure.spec.alpha :as s]
             [clojure.spec.gen.alpha :as gen]
-            [clojure.spec.test.alpha :as stest]))
-
-(ns fogus.t
-  (:require [clojure.spec.alpha :as s]
-            [clojure.spec.gen.alpha :as gen]
-            [clojure.spec.test.alpha :as stest]))
+            [clojure.spec.test.alpha :as stest :exclude (instrument)]))
 
 (set! *warn-on-reflection* true)
 
@@ -59,6 +54,14 @@
         (when (= wrapped current)
           (alter-var-root v (constantly raw))
           (->sym v))))))
+
+(declare instrument-1)
+
+(defn- collectionize
+  [x]
+  (if (symbol? x)
+    (list x)
+    x))
 
 ;; test funs
 
@@ -211,6 +214,17 @@
         (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
         (->sym v)))))
 
+(defn instrument-local
+  ([sym-or-syms opts]
+     (locking instrumented-vars
+       (into
+        []
+        (comp (filter (instrumentable-syms opts))
+              (distinct)
+              (map #(instrument-1 % opts))
+              (remove nil?))
+        (collectionize sym-or-syms)))))
+
 (comment
   (instrument-1 `add10 {})
   (instrument-1 `kwargs-fn {})
@@ -230,7 +244,7 @@
   (f 1 :B)
   (f 1 2 :a 1 {:b :B})
 
-  (instrument-1 `kwargs-fn {})
+  (instrument-local `kwargs-fn {})
 
   (kwargs-fn 1)
   (kwargs-fn 1 2)
