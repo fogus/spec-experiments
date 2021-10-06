@@ -233,7 +233,7 @@
     (clojure.core/fn
       ([opts] (inner opts))
       ([a b] (inner a b))
-      ([a b & {:as m}] (clojure.core/apply inner (clojure.core/->> m clojure.core/seq clojure.core/flatten (clojure.core/concat [a b]))))))
+      ([a b & {:as m}] (clojure.core/apply inner a b (clojure.core/->> m clojure.core/seq clojure.core/flatten)))))
   
   (instrument-local `kwargs-fn {})
 
