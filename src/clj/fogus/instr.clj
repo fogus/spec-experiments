@@ -73,7 +73,12 @@
   ([a b & opts] [a b opts]))
 
 (defn just-varargs [& args]
-  (apply + )args)
+  (apply + args))
+
+(defn add10 [n]
+  (+ 10 n))
+
+(alter-meta! #'add10 dissoc :arglists)
 
 ;;; Specs
 
@@ -97,6 +102,10 @@
 
 (s/fdef just-varargs
   :args (s/cat :numbers (s/* number?))
+  :ret number?)
+
+(s/fdef add10
+  :args (s/cat :arg ::b)
   :ret number?)
 
 ;;; macro utils
@@ -138,8 +147,8 @@
     (let [head-args (->> arglist (take-while (complement #{'&})) vec)
           args-sym  'args]
       {:arglist (vec (concat head-args '[& args]))
-       :data    `(list* ~@head-args ~args-sym)
-       :args    `(list* ~@head-args ~args-sym)
+       :data    `(~@head-args ~args-sym)
+       :args    `(~@head-args ~args-sym)
        :decl    decl})))
 
 (defn- args-context
@@ -198,11 +207,13 @@
             checked (spec-checking-fn v ofn ospec)
             thunk (eval (gen-thunk v))
             wrapped (thunk checked)]
-        (alter-var-root v (constantly wrapped))
-        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
-        (->sym v)))))
+;;        (alter-var-root v (constantly wrapped))
+;;        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
+;;        (->sym v)
+        (gen-thunk v)))))
 
 (comment
+  (instrument-1 `add10 {})
   (instrument-1 `kwargs-fn {})
 
   (clojure.core/fn [inner]

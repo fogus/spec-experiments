@@ -14,7 +14,12 @@
   ([a b & opts] [a b opts]))
 
 (defn just-varargs [& args]
-  (apply + )args)
+  (apply + args))
+
+(defn add10 [n]
+  (+ 10 n))
+
+(alter-meta! #'add10 dissoc :arglists)
 
 ;;; Specs
 
@@ -39,4 +44,10 @@
 (s/fdef just-varargs
   :args (s/cat :numbers (s/* number?))
   :ret number?)
+
+(s/fdef add10
+  :args (s/cat :arg ::b)
+  :ret number?)
+
+;;; Tests
 
