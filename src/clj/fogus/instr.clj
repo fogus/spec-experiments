@@ -114,8 +114,9 @@
         decl (assoc decl :as as-name)
         head-args (->> arglist (take-while (complement #{'&})) vec)]
     {:args    (conj head-args as-name)
-     :data    `(->> ~as-name seq flatten (concat ~head-args))
-     :arglist (-> arglist butlast vec (conj decl))}))
+     :data    `[(->> ~as-name seq flatten (concat ~head-args))]
+     :arglist (-> arglist butlast vec (conj decl))
+     :decl    decl}))
 
 (defn- varargs-context
   "Builds an arguments context for the function body pertaining to a
@@ -128,7 +129,8 @@
           args-sym  'args]
       {:arglist (vec (concat head-args '[& args]))
        :data    `(list* ~@head-args ~args-sym)
-       :args    `(list* ~@head-args ~args-sym)})))
+       :args    `(list* ~@head-args ~args-sym)
+       :decl    decl})))
 
 (defn- args-context
   "Builds an argument context for fixed arities. Both the :args and :data
@@ -146,7 +148,7 @@
    :data the data process used to build the arguments to the arg spec
    :fun  the original function" 
   [context]
-  `(.applyTo ^clojure.lang.IFn ~(:fun context) (seq ~(:data context))))
+  `(~@(:call context) ~@(:data context)))
 
 (defn- gen-bodies
   "Generates the function bodies corresponding to the arities found in the
@@ -159,7 +161,7 @@
                          (varargs-context arglist decl)
                          (args-context    arglist))]           
            (list arglist
-                 (gen-body (merge context {:fun f})))))
+                 (gen-body (merge context {:call (if (:decl context) [`apply f] [f])})))))
        (or (->> v meta :arglists (sort-by count) seq)
            '([& args]))))
 
@@ -195,13 +197,10 @@
 
   (clojure.core/fn [inner]
     (clojure.core/fn
-      ([opts]
-       (.applyTo inner (clojure.core/seq [opts])))
-      ([a b]
-       (.applyTo inner (clojure.core/seq [a b])))
-      ([a b & {:as m}]
-       (.applyTo inner (clojure.core/seq (clojure.core/->> m clojure.core/seq clojure.core/flatten (clojure.core/concat [a b])))))))
-
+      ([opts] (inner opts))
+      ([a b] (inner a b))
+      ([a b & {:as m}] (clojure.core/apply inner (clojure.core/->> m clojure.core/seq clojure.core/flatten (clojure.core/concat [a b]))))))
+  
   (def f (instrument-1 `kwargs-fn {}))
 
   (f 1)
@@ -218,6 +217,4 @@
   (kwargs-fn 1 2 :a 1)
   (kwargs-fn 1 2 :a 1 {:b 2})
   (kwargs-fn 1 :B)
-  (kwargs-fn 1 2 :a 1 {:b :B})
-  
-)
+  (kwargs-fn 1 2 :a 1 {:b :B}))
