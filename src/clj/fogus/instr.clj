@@ -45,7 +45,7 @@
 
 (defonce ^:private instrumented-vars (atom {}))
 
-(defn- unstrument-1
+(defn unstrument-local
   [s]
   (when-let [v (resolve s)]
     (when-let [{:keys [raw wrapped]} (get @instrumented-vars v)]
@@ -235,15 +235,6 @@
       ([a b] (inner a b))
       ([a b & {:as m}] (clojure.core/apply inner (clojure.core/->> m clojure.core/seq clojure.core/flatten (clojure.core/concat [a b]))))))
   
-  (def f (instrument-1 `kwargs-fn {}))
-
-  (f 1)
-  (f 1 2)
-  (f 1 2 :a 1)
-  (f 1 2 :a 1 {:b 2})
-  (f 1 :B)
-  (f 1 2 :a 1 {:b :B})
-
   (instrument-local `kwargs-fn {})
 
   (kwargs-fn 1)
@@ -253,5 +244,5 @@
   (kwargs-fn 1 :B)
   (kwargs-fn 1 2 :a 1 {:b :B})
 
-  (unstrument-1 `kwargs-fn)
+  (unstrument-local `kwargs-fn)
 )

@@ -1,7 +1,9 @@
 (ns instrument-test
   (:require [clojure.test :refer :all]
             [clojure.spec.alpha :as s]
-            [fogus.instr :as stest]))
+            [fogus.instr :as stest]
+            [clojure.spec.gen.alpha :as gen]
+            clojure.spec.test.alpha))
 
 (defn kwargs-fn
   ([opts] opts)
@@ -49,8 +51,65 @@
   :args (s/cat :arg ::b)
   :ret number?)
 
+(comment
+  (gen/generate )
+
+  (stest/instrument-local `kwargs-fn {})
+  (stest/unstrument-local `kwargs-fn)
+  (clojure.spec.test.alpha/check `kwargs-fn)
+)
+
 ;;; Tests
 
 (deftest test-instrument
+  #_(testing "that a function taking fixed args abd varargs is spec'd and checked at runtime"
+    (letfn [(test-varargs-raw []
+              (are [x y] (= x y)
+                1                         (no-kwargs-fn 1)
+                [1 2]                     (no-kwargs-fn 1 2)
+                [1 2 {:a 1}]              (no-kwargs-fn 1 2 :a 1)
+                [1 2 {:a 1}]              (no-kwargs-fn 1 2 {:a 1})
+                [1 2 {:a 1 :b 2}]         (no-kwargs-fn 1 2 :a 1 {:b 2})))]
+      (testing "that the raw kwargs function operates as expected"
+        (test-varargs-raw))
+
+      (testing "that the instrumented kwargs function operates as expected"
+        (stest/instrument-local `no-kwargs-fn {})
+
+        (test-varargs-raw)
+
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (no-kwargs-fn 1 :not-num)))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (no-kwargs-fn 1 2 :a 1 {:b :not-num}))))
+
+      (testing "that the uninstrumented kwargs function operates as the raw function"
+        (stest/unstrument-local `no-kwargs-fn)
+        (test-varargs-raw))))
+  
   (testing "that a function taking keyword args is spec'd and checked at runtime"
-    (is (= ))))
+    (letfn [(test-kwargs-baseline []
+              (are [x y] (= x y)
+                1                         (kwargs-fn 1)
+                [1 2]                     (kwargs-fn 1 2)
+                [1 2 {:a 1}]              (kwargs-fn 1 2 :a 1)
+                [1 2 {:a 1}]              (kwargs-fn 1 2 {:a 1})
+                [1 2 {:a 1 :b 2}]         (kwargs-fn 1 2 :a 1 {:b 2})))
+            (test-kwargs-extended []
+              (are [x y] (= x y)
+                [1 :not-num]              (kwargs-fn 1 :not-num)
+                [1 2 {:a 1 :b :not-num}]  (kwargs-fn 1 2 :a 1 {:b :not-num})))]
+      (testing "that the raw kwargs function operates as expected"
+        (test-kwargs-baseline)
+        (test-kwargs-extended))
+
+      (testing "that the instrumented kwargs function operates as expected"
+        (stest/instrument-local `kwargs-fn {})
+
+        (test-kwargs-baseline)
+
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (kwargs-fn 1 :not-num)))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (kwargs-fn 1 2 :a 1 {:b :not-num}))))
+
+      (testing "that the uninstrumented kwargs function operates as the raw function"
+        (stest/unstrument-local `kwargs-fn)
+        (test-kwargs-baseline)
+        (test-kwargs-extended)))))
