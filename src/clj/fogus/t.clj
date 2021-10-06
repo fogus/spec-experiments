@@ -79,14 +79,25 @@
 
 ;;; macro utils
 
-(defn- varargs [arglist]
+(defn- varargs
+  "Inspects a arglist to find a varargs declarator, i.e. the element after
+  the ampersand and returns it if found."
+  [arglist]
   (let [[_ decl :as restargs] (->> arglist
                                    (split-with (complement #{'&}))
                                    second)]
     (and (= 2 (count restargs))
          decl)))
 
-(defn- kwargs-context [arglist decl]
+(defn- kwargs-context
+  "Builds an arguments context for the function body pertaining to a
+  keyword arguments arity. Inspects the kwargs declarator (i.e. & {})
+  and adds an :as declaration if missing. Also builds a processing
+  chain for the :data that converts the incoming map named by :as into
+  a seq of key->val pairs. This :data process is meant to serve as the
+  input to an arg spec. Finally, rebuilds the arglist to have the
+  ammended kwargs declarator."
+  [arglist decl]
   (let [as-name (or (:as decl) (gensym "as"))
         decl (assoc decl :as as-name)
         head-args (->> arglist (take-while (complement #{'&})) vec)]
@@ -94,7 +105,11 @@
      :data    `(->> ~as-name seq flatten (concat ~head-args))
      :arglist (-> arglist butlast vec (conj decl))}))
 
-(defn- varargs-context [arglist decl]
+(defn- varargs-context
+  "Builds an arguments context for the function body pertaining to a
+  varargs arity. Builds the :data and :args process supplied to args spec by
+  concatenating any named parameters to the varargs parameter."
+  [arglist decl]
   (if (map? decl)
     (kwargs-context arglist decl)
     (let [head-args (->> arglist (take-while (complement #{'&})) vec)
@@ -103,12 +118,25 @@
        :data    `(list* ~@head-args ~args-sym)
        :args    `(list* ~@head-args ~args-sym)})))
 
-(defn- args-context [arglist]
+(defn- args-context
+  "Builds an argument context for fixed arities. Both the :args and :data
+  are taken from the parameter list as the intent is to use the eventual
+  vector as an input to applyTo."
+  [arglist]
   {:args    arglist
    :data    arglist
    :arglist arglist})
 
-(defn- gen-body [context]
+(defn- gen-body
+  "Builds a spec thunk body from a given context. It's expected that the
+  context contain the follwing mappings:
+
+   :var  the instrumented Var under inspection
+   :spec the Spec used to check arguments
+   :data the data process used to build the arguments to the arg spec
+   :args the data process used to builg the arguments to the function
+   :fun  the original function" 
+  [context]
   `(if *instrument-enabled*
      (with-instrument-disabled
        (when (:args ~(:spec context))
@@ -123,24 +151,32 @@
 (defn- fetch-spec [s]
   (@#'s/maybe-spec s))
 
-(defn- gen-bodies [s v {:keys [FUN SPEC] :as context}]
+(defn- gen-bodies
+  "Generates the function bodies corresponding to the arities found in the
+  :arglists meta of the Var v. Takes an additional context map containing
+  local names to capture in the resulting function for the original function
+  under instrumentation and the Spec for that function."
+  [v {:keys [FUN SPEC] :as context}]
   (map (fn [arglist]
          (let [context (if-let [decl (varargs arglist)]
                          (varargs-context arglist decl)
                          (args-context    arglist))]           
            (list arglist
                  (gen-body (merge context {:var v :fun FUN :spec SPEC})))))
-       (or (->> v meta :arglists (sort-by count))
+       (or (->> v meta :arglists (sort-by count) seq)
            '([& args]))))
 
-(defn- gen-thunk [s v f opts]
+(defn- gen-thunk
+  "Builds a thunk and its lexical environment used to instrument a function
+  and perform Spec checking at runtime."
+  [s v f opts]
   (let [FUN  (gensym "ofn")
         SPEC (gensym "ospec")]
     `(let [spec# (s/get-spec ~v)
            ~SPEC (or (instrument-choose-spec spec# ~s ~opts)
                      (throw (no-fspec ~v spec#)))
            ~FUN (instrument-choose-fn ~f ~SPEC ~s ~opts)]
-       (fn ~@(gen-bodies s v {:FUN FUN, :SPEC SPEC})))))
+       (fn ~@(gen-bodies v {:FUN FUN, :SPEC SPEC})))))
 
 (defn- instrument-1
   [s opts]
