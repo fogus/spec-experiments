@@ -130,7 +130,8 @@
                          (args-context    arglist))]           
            (list arglist
                  (gen-body (merge context {:var v :fun FUN :spec SPEC})))))
-       (->> v meta :arglists (sort-by count))))
+       (or (->> v meta :arglists (sort-by count))
+           '([& args]))))
 
 (defn- gen-thunk [s v f opts]
   (let [FUN  (gensym "ofn")
@@ -149,9 +150,10 @@
             current @v
             to-wrap (if (= wrapped current) raw current)
             checked (gen-thunk s v to-wrap opts)]
-        (alter-var-root v (constantly (eval checked)))
-        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
-        (->sym v)))))
+        ;;(alter-var-root v (constantly (eval checked)))
+        ;;(swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked})
+        ;;(->sym v)
+        checked))))
 
 (comment
   ((->
