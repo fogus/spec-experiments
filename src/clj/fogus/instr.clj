@@ -3,7 +3,54 @@
             [clojure.spec.gen.alpha :as gen]
             [clojure.spec.test.alpha :as stest]))
 
+(ns fogus.t
+  (:require [clojure.spec.alpha :as s]
+            [clojure.spec.gen.alpha :as gen]
+            [clojure.spec.test.alpha :as stest]))
+
 (set! *warn-on-reflection* true)
+
+;;; Pull in instrument stuff
+(use 'clojure.spec.test.alpha)
+(def instrument-choose-spec (deref #'clojure.spec.test.alpha/instrument-choose-spec))
+(def instrument-choose-fn (deref #'clojure.spec.test.alpha/instrument-choose-fn))
+(def no-fspec (deref #'clojure.spec.test.alpha/no-fspec))
+(def stacktrace-relevant-to-instrument (deref #'clojure.spec.test.alpha/stacktrace-relevant-to-instrument))
+(def ^:private ^:dynamic *instrument-enabled*
+  "if false, instrumented fns call straight through"
+  true)
+(defn- spec-checking-fn
+  [v f fn-spec]
+  (let [fn-spec (@#'s/maybe-spec fn-spec)
+        conform! (fn [v role spec data args]
+                   (let [conformed (s/conform spec data)]
+                     (if (= ::s/invalid conformed)
+                       (let [caller (->> (.getStackTrace (Thread/currentThread))
+                                         stacktrace-relevant-to-instrument
+                                         first)
+                             ed (merge (assoc (s/explain-data* spec [] [] [] data)
+                                         ::s/fn (->sym v)
+                                         ::s/args args
+                                         ::s/failure :instrument)
+                                       (when caller
+                                         {::caller (dissoc caller :class :method)}))]
+                         (throw (ex-info
+                                 (str "Call to " v " did not conform to spec.")
+                                 ed)))
+                       conformed)))]
+    (fn
+     [& args]
+     (if *instrument-enabled*
+       (with-instrument-disabled
+         (when (:args fn-spec) (conform! v :args (:args fn-spec) args args))
+         (binding [*instrument-enabled* true]
+           (.applyTo ^clojure.lang.IFn f args)))
+       (.applyTo ^clojure.lang.IFn f args)))))
+
+
+(defonce ^:private instrumented-vars (atom {}))
+
+;; test funs
 
 (defn kwargs-fn
   ([opts] opts)
@@ -42,205 +89,135 @@
   :args (s/cat :numbers (s/* number?))
   :ret number?)
 
-;;; Prelim stuff
+;;; macro utils
 
-(use 'clojure.spec.test.alpha)
-(def instrument-choose-spec (deref #'clojure.spec.test.alpha/instrument-choose-spec))
-(def instrument-choose-fn (deref #'clojure.spec.test.alpha/instrument-choose-fn))
-(def no-fspec (deref #'clojure.spec.test.alpha/no-fspec))
-(def stacktrace-relevant-to-instrument (deref #'clojure.spec.test.alpha/stacktrace-relevant-to-instrument))
-(def ^:private ^:dynamic *instrument-enabled*
-  "if false, instrumented fns call straight through"
-  true)
-
-(defonce ^:private instrumented-vars (atom {}))
-
-;; Macros
-
-(defn- varargs [arglist]
+(defn- varargs
+  "Inspects a arglist to find a varargs declarator, i.e. the element after
+  the ampersand and returns it if found."
+  [arglist]
   (let [[_ decl :as restargs] (->> arglist
                                    (split-with (complement #{'&}))
                                    second)]
     (and (= 2 (count restargs))
          decl)))
 
-(defn- kwargs-context [v f fn-spec arglist decl]
+(defn- kwargs-context
+  "Builds an arguments context for the function body pertaining to a
+  keyword arguments arity. Inspects the kwargs declarator (i.e. & {})
+  and adds an :as declaration if missing. Also builds a processing
+  chain for the :data that converts the incoming map named by :as into
+  a seq of key->val pairs. This :data process is meant to serve as the
+  input to an arg spec. Finally, rebuilds the arglist to have the
+  ammended kwargs declarator."
+  [arglist decl]
   (let [as-name (or (:as decl) (gensym "as"))
         decl (assoc decl :as as-name)
         head-args (->> arglist (take-while (complement #{'&})) vec)]
     {:args    (conj head-args as-name)
      :data    `(->> ~as-name seq flatten (concat ~head-args))
-     :arglist (-> arglist butlast vec (conj decl))
-     :spec    fn-spec
-     :var     v}))
+     :arglist (-> arglist butlast vec (conj decl))}))
 
-(defn- varargs-context [v f fn-spec arglist decl]
+(defn- varargs-context
+  "Builds an arguments context for the function body pertaining to a
+  varargs arity. Builds the :data and :args process supplied to args spec by
+  concatenating any named parameters to the varargs parameter."
+  [arglist decl]
   (if (map? decl)
-    (kwargs-context v f fn-spec arglist decl)
+    (kwargs-context arglist decl)
     (let [head-args (->> arglist (take-while (complement #{'&})) vec)
           args-sym  'args]
       {:arglist (vec (concat head-args '[& args]))
        :data    `(list* ~@head-args ~args-sym)
-       :args    `(list* ~@head-args ~args-sym)
-       :spec    fn-spec
-       :var     v})))
+       :args    `(list* ~@head-args ~args-sym)})))
 
-(defn- args-context [v f fn-spec arglist]
-  {:args arglist
-   :data arglist
-   :spec fn-spec
-   :var  v})
+(defn- args-context
+  "Builds an argument context for fixed arities. Both the :args and :data
+  are taken from the parameter list as the intent is to use the eventual
+  vector as an input to applyTo."
+  [arglist]
+  {:args    arglist
+   :data    arglist
+   :arglist arglist})
 
-(defn- gen-body [context]
-  `(if *instrument-enabled*
-     (with-instrument-disabled
-       (when (:args ~(:spec context))
-         (conform! ~(:var context)                   ;; var
-                   :args (:args ~(:spec context))    ;; spec object
-                   ~(:data context)                  ;; data to check
-                   ~(:args context)))                ;; args
-       (binding [*instrument-enabled* true]
-         (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context))))) ;; seq of arglist
-     (.applyTo ^clojure.lang.IFn kwargs-fn (seq ~(:args context)))))
+(defn- gen-body
+  "Builds a spec thunk body from a given context. It's expected that the
+  context contain the follwing mappings:
 
-(defn- fetch-spec [s]
-  (@#'s/maybe-spec s))
+   :data the data process used to build the arguments to the arg spec
+   :fun  the original function" 
+  [context]
+  `(.applyTo ^clojure.lang.IFn ~(:fun context) (seq ~(:data context))))
 
-(defn- gen-bodies [v f s]
-  (let [arglists (->> v meta :arglists (sort-by count))
-        v (if (var? v) v (resolve v))]
-    (list `let ['fn-spec `(s/get-spec ~v)]
-          (list* `fn
-             (if (seq arglists)
-              (map (fn [arglist]
-                     (let [context (if-let [decl (varargs arglist)]
-                                     (varargs-context v f 'fn-spec arglist decl)
-                                     (args-context   v f 'fn-spec arglist))]
-                       `(~(or (:arglist context) arglist)
-                         ~(gen-body context))))
-                   arglists)
-              `(~'[& args]
-                ~(gen-body {:args 'args
-                            :data 'args
-                            :var  v
-                            :spec 'fn-spec})))))))
+(defn- gen-bodies
+  "Generates the function bodies corresponding to the arities found in the
+  :arglists meta of the Var v. Takes an additional context map containing
+  local names to capture in the resulting function for the original function
+  under instrumentation and the Spec for that function."
+  [v f]
+  (map (fn [arglist]
+         (let [context (if-let [decl (varargs arglist)]
+                         (varargs-context arglist decl)
+                         (args-context    arglist))]           
+           (list arglist
+                 (gen-body (merge context {:fun f})))))
+       (or (->> v meta :arglists (sort-by count) seq)
+           '([& args]))))
 
-(comment
+(defn- gen-thunk
+  "Builds a thunk and its lexical environment used to instrument a function
+  and perform Spec checking at runtime."
+  [v]
+  (let [orig 'inner]
+    `(fn [~orig]
+       (fn
+         ~@(gen-bodies v orig)))))
 
-  (gen-bodies (var kwargs-fn) kwargs-fn `kwargs-fn)
-
-)
-
-(def conform!
-  (fn [v role spec data args]
-    (let [_ (println "chekcing " data " & " args)
-          conformed (s/conform spec data)]
-      (if (= ::s/invalid conformed)
-        (let [caller (->> (.getStackTrace (Thread/currentThread))
-                          stacktrace-relevant-to-instrument
-                          first)
-              ed (merge (assoc (s/explain-data* spec [] [] [] data)
-                               ::s/fn (->sym v)
-                               ::s/args args
-                               ::s/failure :instrument)
-                        (when caller
-                          {::caller (dissoc caller :class :method)}))]
-          (throw (ex-info
-                  (str "Call to " v " did not conform to spec.")
-                  ed)))
-        conformed))))
-
-(defmacro spec-checking-fn-macro
-  [s]
-  (let [v (resolve s)
-        f @v]
-    (gen-bodies v f s)))
-
-(defmacro foo ([]))
+(defn- instrument-1
+  [s opts]
+  (when-let [v (resolve s)]
+    (when-not (-> v meta :macro)
+      (let [spec (s/get-spec v)
+            {:keys [raw wrapped]} (get @instrumented-vars v)
+            current @v
+            to-wrap (if (= wrapped current) raw current)
+            ospec (or (instrument-choose-spec spec s opts)
+                      (throw (no-fspec v spec)))
+            ofn (instrument-choose-fn to-wrap ospec s opts)
+            checked (spec-checking-fn v ofn ospec)
+            thunk (eval (gen-thunk v))
+            wrapped (thunk checked)]
+        (alter-var-root v (constantly wrapped))
+        (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
+        (->sym v)))))
 
 (comment
+  (instrument-1 `kwargs-fn {})
 
-  (def ff (spec-checking-fn-macro fogus.instr/kwargs-fn))
+  (clojure.core/fn [inner]
+    (clojure.core/fn
+      ([opts]
+       (.applyTo inner (clojure.core/seq [opts])))
+      ([a b]
+       (.applyTo inner (clojure.core/seq [a b])))
+      ([a b & {:as m}]
+       (.applyTo inner (clojure.core/seq (clojure.core/->> m clojure.core/seq clojure.core/flatten (clojure.core/concat [a b])))))))
 
-  (macroexpand-1 `(spec-checking-fn-macro fogus.instr/kwargs-fn))
+  (def f (instrument-1 `kwargs-fn {}))
+
+  (f 1)
+  (f 1 2)
+  (f 1 2 :a 1)
+  (f 1 2 :a 1 {:b 2})
+  (f 1 :B)
+  (f 1 2 :a 1 {:b :B})
+
+  (instrument-1 `kwargs-fn {})
+
+  (kwargs-fn 1)
+  (kwargs-fn 1 2)
+  (kwargs-fn 1 2 :a 1)
+  (kwargs-fn 1 2 :a 1 {:b 2})
+  (kwargs-fn 1 :B)
+  (kwargs-fn 1 2 :a 1 {:b :B})
   
-  (ff 1)
-  (ff 1 2)
-  (ff 1 2 {:a 1})
-  (ff 1 2 {:a 1 :b 2 :c 3})
-  (ff 1 "b" {:a 1})
-  (ff 1 2 {:a 1 :b "b"})
-
-  (instrument '[fogus.instr/kwargs-fn fogus.instr/just-varargs] {})
-
-  ;; expand to
-
-  (locking instrumented-vars
-    (when-let [v (resolve 'fogus.instr/kwargs-fn)]
-      (when-not (-> v meta :macro)
-        (let [opts {}
-              spec (s/get-spec v)
-              {:keys [raw wrapped]} (get @instrumented-vars v)
-              current @v
-              to-wrap (if (= wrapped current) raw current)
-              ospec (or (instrument-choose-spec spec s opts)
-                        (throw (no-fspec v spec)))
-              ofn (instrument-choose-fn to-wrap ospec s opts)
-              checked (let [fn-spec (get-spec ospec)]
-                        (fn
-                          ([opts]
-                           (if *instrument-enabled*
-                             (with-instrument-disabled
-                               (when (:args fn-spec)
-                                 (conform! v :args (:args fn-spec) [opts] [opts]))
-                               (binding [*instrument-enabled* true]
-                                 (.applyTo ofn (clojure.core/seq [opts]))))
-                             (.applyTo ofn (seq [opts]))))
-
-                          ([a b]
-                           (if *instrument-enabled*
-                             (with-instrument-disabled
-                               (when (:args fn-spec)
-                                 (conform! v :args (:args fn-spec) [a b] [a b]))
-                               (binding [*instrument-enabled* true]
-                                 (.applyTo ofn (seq [a b]))))
-                             (.applyTo ofn (seq [a b]))))
-
-                          ([a b & {:as m}]
-                           (if *instrument-enabled*
-                             (with-instrument-disabled
-                               (when (:args fn-spec)
-                                 (conform! v :args (:args fn-spec) (->> m seq flatten (concat [a b])) [a b m]))
-                               (binding [*instrument-enabled* true]
-                                 (.applyTo ofn (seq [a b m]))))
-                             (.applyTo ofn (seq [a b m]))))))]
-          (alter-var-root v (constantly checked))
-          (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked}))))
-
-    (when-let [v (resolve 'fogus.instr/just-varargs)]
-      (when-not (-> v meta :macro)
-        (let [opts {}
-              spec (s/get-spec v)
-              {:keys [raw wrapped]} (get @instrumented-vars v)
-              current @v
-              to-wrap (if (= wrapped current) raw current)
-              ospec (or (instrument-choose-spec spec s opts)
-                        (throw (no-fspec v spec)))
-              ofn (instrument-choose-fn to-wrap ospec s opts)
-              checked (let [fn-spec (get-spec ospec)]
-                        (fn
-                          ([& args]
-                           (if *instrument-enabled*
-                             (with-instrument-disabled
-                               (when (:args fn-spec)
-                                 (conform! v :args (:args fn-spec) args args))
-                               (binding [*instrument-enabled* true]
-                                 (.applyTo ofn (seq args))))
-                             (.applyTo ofn (seq args))))))]
-          (alter-var-root v (constantly checked))
-          (swap! instrumented-vars assoc v {:raw to-wrap :wrapped checked}))))
-
-    '[fogus.instr/kwargs-fn fogus.instr/just-varargs])
-  
-
 )
