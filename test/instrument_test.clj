@@ -62,14 +62,12 @@
 ;;; Tests
 
 (deftest test-instrument
-  #_(testing "that a function taking fixed args abd varargs is spec'd and checked at runtime"
+  (testing "that a function taking fixed args and varargs is spec'd and checked at runtime"
     (letfn [(test-varargs-raw []
               (are [x y] (= x y)
                 1                         (no-kwargs-fn 1)
                 [1 2]                     (no-kwargs-fn 1 2)
-                [1 2 {:a 1}]              (no-kwargs-fn 1 2 :a 1)
-                [1 2 {:a 1}]              (no-kwargs-fn 1 2 {:a 1})
-                [1 2 {:a 1 :b 2}]         (no-kwargs-fn 1 2 :a 1 {:b 2})))]
+                [1 2 [3 4 5]]             (no-kwargs-fn 1 2 3 4 5)))]
       (testing "that the raw kwargs function operates as expected"
         (test-varargs-raw))
 
@@ -79,7 +77,7 @@
         (test-varargs-raw)
 
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (no-kwargs-fn 1 :not-num)))
-        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (no-kwargs-fn 1 2 :a 1 {:b :not-num}))))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (no-kwargs-fn 1 2 :not-num 3))))
 
       (testing "that the uninstrumented kwargs function operates as the raw function"
         (stest/unstrument-local `no-kwargs-fn)
