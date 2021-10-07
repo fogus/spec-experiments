@@ -136,8 +136,8 @@
         decl (assoc decl :as as-name)
         head-args (->> arglist (take-while (complement #{'&})) vec)]
     {:args    (conj head-args as-name)
-     :data    `[~@head-args (->> ~as-name seq flatten)]
-     :arglist (-> arglist butlast vec (conj decl))
+     :data    `[~@head-args (if (odd? (count ~as-name)) (let [trail# (last ~as-name)] (if (map? trail#) (concat (butlast ~as-name) (-> trail# seq flatten)) ~as-name)) ~as-name)] ;; (->> ~as-name seq flatten)
+     :arglist (vec (concat head-args ['& as-name])) ;; (-> arglist butlast vec (conj decl))
      :decl    decl}))
 
 (defn- varargs-context
@@ -182,7 +182,7 @@
          (let [context (if-let [decl (varargs arglist)]
                          (varargs-context arglist decl)
                          (args-context    arglist))]           
-           (list arglist
+           (list (or (:arglist context arglist))
                  (gen-body (merge context {:call (if (:decl context) [`apply f] [f])})))))
        (or (->> v meta :arglists (sort-by count) seq)
            '([& args]))))
@@ -233,7 +233,14 @@
     (clojure.core/fn
       ([opts] (inner opts))
       ([a b] (inner a b))
-      ([a b & {:as m}] (clojure.core/apply inner a b (clojure.core/->> m clojure.core/seq clojure.core/flatten)))))
+      ([a b & m]
+       (clojure.core/apply inner a b (if (clojure.core/odd? (clojure.core/count m))
+                                       (clojure.core/let [trail__6540__auto__ (clojure.core/last m)]
+                                         (if (clojure.core/map? trail__6540__auto__)
+                                           (clojure.core/concat (clojure.core/butlast m)
+                                                                (clojure.core/-> trail__6540__auto__ clojure.core/seq clojure.core/flatten))
+                                           m))
+                                       m)))))
   
   (instrument-local `kwargs-fn {})
 
@@ -245,4 +252,17 @@
   (kwargs-fn 1 2 :a 1 {:b :B})
 
   (unstrument-local `kwargs-fn)
+
+  (defn proc [& args]
+    (if (odd? (count args))
+      (let [trail (last args)]
+        (if (map? trail)
+          (concat (butlast args) (-> trail seq flatten))
+          args))
+      args))
+
+  (proc :a 1 :b 2)
+  (proc :a 1 :b 2 {:c 3})
+  (proc)
+  
 )
