@@ -126,9 +126,8 @@
 (defn- build-xform [local]
   `(if (even? (count ~local))
      ~local
-     (let [trail# (last ~local)]
-       (concat (butlast ~local)
-               (-> trail# seq flatten)))))
+     (concat (butlast ~local)
+             (-> ~local last seq flatten))))
 
 (comment
 
