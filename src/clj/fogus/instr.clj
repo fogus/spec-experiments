@@ -123,6 +123,31 @@
     (and (= 2 (count restargs))
          decl)))
 
+(defn- build-xform [local]
+  `(if (even? (count ~local))
+     ~local
+     (let [trail# (last ~local)]
+       (concat (butlast ~local)
+               (-> trail# seq flatten)))))
+
+(comment
+
+  (defn xform [& local]
+    (if (even? (count local))
+      local
+      (let [trail (last local)]
+        (concat (butlast local)
+                (-> trail seq flatten)))))
+
+  (xform :a 1 :b 2)
+  (xform :a 1 {:b 2})
+  (xform :a 1 :b)
+
+  (seq (java.util.HashMap. {:a 1 :b 2}))
+  (flatten (seq [(java.util.AbstractMap$SimpleEntry. :a 1) (java.util.AbstractMap$SimpleEntry. :b 2)]))
+  (flatten (seq [(clojure.lang.MapEntry/create :a 1) (clojure.lang.MapEntry/create :b 2)]))
+)
+
 (defn- kwargs-context
   "Builds an arguments context for the function body pertaining to a
   keyword arguments arity. Inspects the kwargs declarator (i.e. & {})
@@ -132,11 +157,11 @@
   input to an arg spec. Finally, rebuilds the arglist to have the
   ammended kwargs declarator."
   [arglist decl]
-  (let [as-name (or (:as decl) (gensym "as"))
+  (let [as-name 'kvs ;; (or (:as decl) (gensym "as"))
         decl (assoc decl :as as-name)
         head-args (->> arglist (take-while (complement #{'&})) vec)]
     {:args    (conj head-args as-name)
-     :data    `[~@head-args (if (odd? (count ~as-name)) (let [trail# (last ~as-name)] (if (map? trail#) (concat (butlast ~as-name) (-> trail# seq flatten)) ~as-name)) ~as-name)] ;; (->> ~as-name seq flatten)
+     :data    `[~@head-args ~(build-xform as-name)] ;; (->> ~as-name seq flatten)
      :arglist (vec (concat head-args ['& as-name])) ;; (-> arglist butlast vec (conj decl))
      :decl    decl}))
 
@@ -212,7 +237,9 @@
             wrapped (thunk checked)]
         (alter-var-root v (constantly wrapped))
         (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
-        (->sym v)))))
+        (->sym v)
+;;        (gen-thunk v)
+        ))))
 
 (defn instrument-local
   ([sym-or-syms opts]
