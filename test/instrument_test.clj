@@ -52,11 +52,6 @@
   :ret number?)
 
 (comment
-  (gen/generate )
-
-  (stest/instrument-local `kwargs-fn {})
-  (stest/unstrument-local `kwargs-fn)
-  (clojure.spec.test.alpha/check `kwargs-fn)
 )
 
 ;;; Tests
@@ -110,4 +105,14 @@
       (testing "that the uninstrumented kwargs function operates as the raw function"
         (stest/unstrument-local `kwargs-fn)
         (test-kwargs-baseline)
-        (test-kwargs-extended)))))
+        (test-kwargs-extended))))
+
+  (testing "that a var with no arglists meta is spec'd and checked at runtime"
+    (clojure.spec.test.alpha/check `add10)
+    
+    (stest/instrument-local `add10 {})
+    (clojure.spec.test.alpha/check `add10)
+    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (add10 :not-num)))
+    
+    (stest/unstrument-local `kwargs-fn)
+    (clojure.spec.test.alpha/check `add10)))
