@@ -74,9 +74,11 @@
 
       (testing "that the instrumented kwargs function operates as expected"
         (stest/instrument-local `no-kwargs-fn {})
+        (stest/instrument-local `just-varargs {})
 
         (test-varargs-raw)
         (is (clojure.spec.test.alpha/check `no-kwargs-fn) (-> first :clojure.spec.test.check/ret :pass?))
+        (is (clojure.spec.test.alpha/check `just-varargs) (-> first :clojure.spec.test.check/ret :pass?))
 
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (no-kwargs-fn 1 :not-num)))
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (no-kwargs-fn 1 2 :not-num 3))))
