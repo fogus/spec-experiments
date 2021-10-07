@@ -52,6 +52,12 @@
   :ret number?)
 
 (comment
+  (stest/instrument-local `kwargs-fn {})
+  (stest/unstrument-local `kwargs-fn)
+  (clojure.spec.test.alpha/check `kwargs-fn)
+
+  (kwargs-fn 1 :a)
+  (kwargs-fn 1 2 {:b :a})
 )
 
 ;;; Tests
@@ -70,6 +76,7 @@
         (stest/instrument-local `no-kwargs-fn {})
 
         (test-varargs-raw)
+        (is (clojure.spec.test.alpha/check `no-kwargs-fn) (-> first :clojure.spec.test.check/ret :pass?))
 
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (no-kwargs-fn 1 :not-num)))
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (no-kwargs-fn 1 2 :not-num 3))))
@@ -98,6 +105,7 @@
         (stest/instrument-local `kwargs-fn {})
 
         (test-kwargs-baseline)
+        (is (clojure.spec.test.alpha/check `kwargs-fn) (-> first :clojure.spec.test.check/ret :pass?))
 
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (kwargs-fn 1 :not-num)))
         (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (kwargs-fn 1 2 :a 1 {:b :not-num}))))
@@ -108,11 +116,11 @@
         (test-kwargs-extended))))
 
   (testing "that a var with no arglists meta is spec'd and checked at runtime"
-    (clojure.spec.test.alpha/check `add10)
+    (is (clojure.spec.test.alpha/check `add10) (-> first :clojure.spec.test.check/ret :pass?))
     
     (stest/instrument-local `add10 {})
-    (clojure.spec.test.alpha/check `add10)
+    (is (clojure.spec.test.alpha/check `add10) (-> first :clojure.spec.test.check/ret :pass?))
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"did not conform to spec" (add10 :not-num)))
     
     (stest/unstrument-local `kwargs-fn)
-    (clojure.spec.test.alpha/check `add10)))
+    (is (clojure.spec.test.alpha/check `add10) (-> first :clojure.spec.test.check/ret :pass?))))
