@@ -127,7 +127,10 @@
   `(if (even? (count ~local))
      ~local
      (concat (butlast ~local)
-             (-> ~local last seq flatten))))
+             (reduce (fn [acc# ^java.util.Map$Entry me#]
+                       (conj acc# (.getKey me#) (.getValue me#)))
+                     []
+                     (last ~local)))))
 
 (comment
 
@@ -136,15 +139,18 @@
       local
       (let [trail (last local)]
         (concat (butlast local)
-                (-> trail seq flatten)))))
+                (reduce (fn [acc ^java.util.Map$Entry me]
+                          (conj acc (.getKey me) (.getValue me)))
+                        []
+                        trail)))))
 
   (xform :a 1 :b 2)
   (xform :a 1 {:b 2})
   (xform :a 1 :b)
-
-  (seq (java.util.HashMap. {:a 1 :b 2}))
-  (flatten (seq [(java.util.AbstractMap$SimpleEntry. :a 1) (java.util.AbstractMap$SimpleEntry. :b 2)]))
-  (flatten (seq [(clojure.lang.MapEntry/create :a 1) (clojure.lang.MapEntry/create :b 2)]))
+  (xform :a 1 (java.util.HashMap. {:b 2 :c 3}))
+  (xform :a 1 {:b 2 :c 3})
+  (xform [(java.util.AbstractMap$SimpleEntry. :a 1) (java.util.AbstractMap$SimpleEntry. :b 2)])
+  (xform [(clojure.lang.MapEntry/create :a 1) (clojure.lang.MapEntry/create :b 2)])
 )
 
 (defn- kwargs-context
@@ -156,12 +162,12 @@
   input to an arg spec. Finally, rebuilds the arglist to have the
   ammended kwargs declarator."
   [arglist decl]
-  (let [as-name 'kvs ;; (or (:as decl) (gensym "as"))
+  (let [as-name 'kvs
         decl (assoc decl :as as-name)
         head-args (->> arglist (take-while (complement #{'&})) vec)]
     {:args    (conj head-args as-name)
-     :data    `[~@head-args ~(build-xform as-name)] ;; (->> ~as-name seq flatten)
-     :arglist (vec (concat head-args ['& as-name])) ;; (-> arglist butlast vec (conj decl))
+     :data    `[~@head-args ~(build-xform as-name)]
+     :arglist (vec (concat head-args ['& as-name]))
      :decl    decl}))
 
 (defn- varargs-context
@@ -236,9 +242,7 @@
             wrapped (thunk checked)]
         (alter-var-root v (constantly wrapped))
         (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
-        (->sym v)
-;;        (gen-thunk v)
-        ))))
+        (->sym v)))))
 
 (defn instrument-local
   ([sym-or-syms opts]
@@ -259,14 +263,16 @@
     (clojure.core/fn
       ([opts] (inner opts))
       ([a b] (inner a b))
-      ([a b & m]
-       (clojure.core/apply inner a b (if (clojure.core/odd? (clojure.core/count m))
-                                       (clojure.core/let [trail__6540__auto__ (clojure.core/last m)]
-                                         (if (clojure.core/map? trail__6540__auto__)
-                                           (clojure.core/concat (clojure.core/butlast m)
-                                                                (clojure.core/-> trail__6540__auto__ clojure.core/seq clojure.core/flatten))
-                                           m))
-                                       m)))))
+      ([a b & kvs]
+       (clojure.core/apply inner a b (if (clojure.core/even? (clojure.core/count kvs))
+                                       kvs
+                                       (clojure.core/concat
+                                        (clojure.core/butlast kvs)
+                                        (clojure.core/reduce
+                                         (clojure.core/fn [acc__10108__auto__ me__10109__auto__]
+                                           (clojure.core/conj acc__10108__auto__ (.getKey me__10109__auto__) (.getValue me__10109__auto__)))
+                                         []
+                                         (clojure.core/last kvs))))))))
   
   (instrument-local `kwargs-fn {})
 
