@@ -127,10 +127,9 @@
   `(if (even? (count ~local))
      ~local
      (concat (butlast ~local)
-             (reduce (fn [acc# ^java.util.Map$Entry me#]
-                       (conj acc# (.getKey me#) (.getValue me#)))
-                     []
-                     (last ~local)))))
+             (reduce-kv (fn [acc# k# v#] (->> acc# (cons v#) (cons k#)))
+                        ()
+                        (last ~local)))))
 
 (comment
 
@@ -165,7 +164,7 @@
   (let [as-name 'kvs
         decl (assoc decl :as as-name)
         head-args (->> arglist (take-while (complement #{'&})) vec)]
-    {:args    (conj head-args as-name)
+    {
      :data    `[~@head-args ~(build-xform as-name)]
      :arglist (vec (concat head-args ['& as-name]))
      :decl    decl}))
@@ -181,7 +180,7 @@
           args-sym  'args]
       {:arglist (vec (concat head-args '[& args]))
        :data    `(~@head-args ~args-sym)
-       :args    `(~@head-args ~args-sym)
+     
        :decl    decl})))
 
 (defn- args-context
@@ -189,7 +188,7 @@
   are taken from the parameter list as the intent is to use the eventual
   vector as an input to applyTo."
   [arglist]
-  {:args    arglist
+  {
    :data    arglist
    :arglist arglist})
 
