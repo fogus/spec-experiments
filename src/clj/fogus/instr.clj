@@ -17,7 +17,7 @@
 
 (defn- ensure-checking-fn
   "Builds a thunk and its lexical environment used to instrument a function
-  and perform Spec checking at runtime."
+  and perform Spec checking on its arguments at runtime."
   [v f fn-spec]
   (let [fn-spec (@#'s/maybe-spec fn-spec)
         conform! (fn [v role spec data args]
@@ -174,9 +174,10 @@
           `(~f ~@arglist))))
 
 (defn- build-flattener-struct
-  "Generates the function bodies corresponding to the arities in arglists.
-  Takes an additional name pertaining to an underlying function to capture
-  and delegate to in the function bodies."
+  "Takes an arglists data-structure and generates data for eval
+  defining a HOF that given a function returns a function of
+  analgous arglists that passes arguments on to the closed over
+  function."
   [arglists]
   (let [closed-over-name (gensym "inner")]
     `(fn [~closed-over-name]
@@ -204,10 +205,11 @@
 )
 
 (defn- maybe-wrap-kvs-emulation
-  "Takes an argslist and builds a HOF that returns a function that flattens a
-  trailing map in the kwargs call case for a function of those signatures iff
-  the argslist contains an arity for keyword-arguments. Otherwise, returns
-  identity."
+  "Takes an argslist and function. If the arglists contain an arity
+  for keyword-arguments then a HOF is generated that returns a
+  wrapping function that flattens a trailing map into a key->val
+  seq if present. The seq is then used as supplemental arguments
+  to the function f."
   [f arglists]
   (if (has-kwargs? arglists)
     (let [flattener-struct (build-flattener-struct arglists)
