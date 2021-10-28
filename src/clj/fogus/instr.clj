@@ -188,19 +188,8 @@
                   (or arglists
                       '([& args])))))))
 
-(defn- gen-kvs-emulation-wrapper
-  "Takes an argslist and builds a HOF that returns a function that flattens a
-  trailing map in the kwargs call case for a function of those signatures iff
-  the argslist contains an arity for keyword-arguments. Otherwise, returns
-  identity."
-  [arglists]
-  (if (has-kwargs? arglists)
-    (let [flattener-struct (build-flattener-struct arglists)]
-      (eval flattener-struct))
-    identity))
-
 (comment
-  ;; The thunk generated is below (with some gensym name cleanup for readability)
+  ;; The flattener generated is below (with some gensym name cleanup for readability)
   (fn [inner]
     (fn
       ([G__a] (inner G__a))
@@ -213,6 +202,18 @@
                                                      (butlast G__kvs)
                                                      (last G__kvs)))))))
 )
+
+(defn- maybe-wrap-kvs-emulation
+  "Takes an argslist and builds a HOF that returns a function that flattens a
+  trailing map in the kwargs call case for a function of those signatures iff
+  the argslist contains an arity for keyword-arguments. Otherwise, returns
+  identity."
+  [f arglists]
+  (if (has-kwargs? arglists)
+    (let [flattener-struct (build-flattener-struct arglists)
+          kvs-emu (eval flattener-struct)]
+      (kvs-emu f))
+    f))
 
 (defn- instrument-1
   [s opts]
@@ -227,8 +228,7 @@
             ofn (instrument-choose-fn to-wrap ospec s opts)
             arglists (->> v meta :arglists (sort-by count) seq)
             checked (ensure-checking-fn v ofn ospec)
-            maybe-wrapper (gen-kvs-emulation-wrapper arglists)
-            wrapped (maybe-wrapper checked)]
+            wrapped (maybe-wrap-kvs-emulation checked arglists)]
         (alter-var-root v (constantly wrapped))
         (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
         (->sym v)))))
