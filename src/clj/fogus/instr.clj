@@ -14,7 +14,10 @@
 (def ^:private ^:dynamic *instrument-enabled*
   "if false, instrumented fns call straight through"
   true)
-(defn- spec-checking-fn
+
+(defn- ensure-checking-fn
+  "Builds a thunk and its lexical environment used to instrument a function
+  and perform Spec checking at runtime."
   [v f fn-spec]
   (let [fn-spec (@#'s/maybe-spec fn-spec)
         conform! (fn [v role spec data args]
@@ -113,9 +116,9 @@
 
 ;;; macro utils
 
-(defn- varargs
+(defn- find-varargs-decl
   "Inspects a arglist to find a varargs declarator, i.e. the element after
-  the ampersand and returns it if found."
+  the ampersand, and returns it if found."
   [arglist]
   (let [[_ decl :as restargs] (->> arglist
                                    (split-with (complement #{'&}))
@@ -123,107 +126,93 @@
     (and (= 2 (count restargs))
          decl)))
 
-(defn- build-xform [local]
-  `(if (even? (count ~local))
-     ~local
-     (concat (butlast ~local)
-             (reduce-kv (fn [acc# k# v#] (->> acc# (cons v#) (cons k#)))
+(defn- has-kwargs? [arglists]
+  (->> arglists (some find-varargs-decl) map?))
+
+(defn- unmappify [args]
+  (if (even? (count args))
+     args
+     (concat (butlast args)
+             (reduce-kv (fn [acc k v] (->> acc (cons v) (cons k)))
                         ()
-                        (last ~local)))))
+                        (last args)))))
 
-(comment
-
-  (defn xform [& local]
-    (if (even? (count local))
-      local
-      (let [trail (last local)]
-        (concat (butlast local)
-                (reduce (fn [acc ^java.util.Map$Entry me]
-                          (conj acc (.getKey me) (.getValue me)))
-                        []
-                        trail)))))
-
-  (xform :a 1 :b 2)
-  (xform :a 1 {:b 2})
-  (xform :a 1 :b)
-  (xform :a 1 (java.util.HashMap. {:b 2 :c 3}))
-  (xform :a 1 {:b 2 :c 3})
-  (xform [(java.util.AbstractMap$SimpleEntry. :a 1) (java.util.AbstractMap$SimpleEntry. :b 2)])
-  (xform [(clojure.lang.MapEntry/create :a 1) (clojure.lang.MapEntry/create :b 2)])
-)
-
-(defn- kwargs-context
-  "Builds an arguments context for the function body pertaining to a
-  keyword arguments arity. Inspects the kwargs declarator (i.e. & {})
-  and adds an :as declaration if missing. Also builds a processing
-  chain for the :data that converts the incoming map named by :as into
-  a seq of key->val pairs. This :data process is meant to serve as the
-  input to an arg spec. Finally, rebuilds the arglist to have the
-  ammended kwargs declarator."
-  [arglist decl]
-  (let [as-name 'kvs
-        decl (assoc decl :as as-name)
-        head-args (->> arglist (take-while (complement #{'&})) vec)]
-    {
-     :data    `[~@head-args ~(build-xform as-name)]
-     :arglist (vec (concat head-args ['& as-name]))
-     :decl    decl}))
-
-(defn- varargs-context
-  "Builds an arguments context for the function body pertaining to a
-  varargs arity. Builds the :data and :args process supplied to args spec by
-  concatenating any named parameters to the varargs parameter."
-  [arglist decl]
-  (if (map? decl)
-    (kwargs-context arglist decl)
-    (let [head-args (->> arglist (take-while (complement #{'&})) vec)
-          args-sym  'args]
-      {:arglist (vec (concat head-args '[& args]))
-       :data    `(~@head-args ~args-sym)
-     
-       :decl    decl})))
-
-(defn- args-context
-  "Builds an argument context for fixed arities. Both the :args and :data
-  are taken from the parameter list as the intent is to use the eventual
-  vector as an input to applyTo."
+(defn- process-fixed-args
+  "Takes an arglist and returns a vector of symbols pertaining to the
+  fixed arguments in the original arglist."
   [arglist]
-  {
-   :data    arglist
-   :arglist arglist})
+  (->> arglist (take-while (complement #{'&})) (map (fn [_] (gensym))) vec))
 
-(defn- gen-body
-  "Builds a spec thunk body from a given context. It's expected that the
-  context contain the follwing mappings:
+(defn- kwargs-body
+  "Builds a function body pertaining to a keyword arguments arity.
+  A varargs arity is built with a processing chain for the
+  incoming arguments that detects if a trailing argument exists and
+  attempts to convert it to a seq of key->val pairs. This seq is the
+  input to the underlying function prefixed by any named arguments."
+  [f arglist]
+  (let [alias (gensym "kvs")
+        head-args (process-fixed-args arglist)]
+    (list (conj head-args '& alias)
+          `(apply ~f ~@head-args (@#'unmappify ~alias)))))
 
-   :data the data process used to build the arguments to the arg spec
-   :fun  the original function" 
-  [context]
-  `(~@(:call context) ~@(:data context)))
+(defn- varargs-body
+  "Builds a function body pertaining to a varargs arity. Builds the
+  call to the underlying function by supplying any named parameters
+  and the varargs parameter to apply."
+  [f arglist]
+  (let [head-args (process-fixed-args arglist)
+        alias  (gensym "args")]
+    (list (conj head-args '& alias)
+          `(apply ~f ~@head-args ~alias))))
+
+(defn- fixed-args-body
+  "Builds an argument context for fixed arities. The arguments
+  are taken directly from the parameter list."
+  [f arglist]
+  (let [arglist (process-fixed-args arglist)]
+    (list arglist
+          `(~f ~@arglist))))
 
 (defn- gen-bodies
-  "Generates the function bodies corresponding to the arities found in the
-  :arglists meta of the Var v. Takes an additional context map containing
-  local names to capture in the resulting function for the original function
-  under instrumentation and the Spec for that function."
-  [v f]
+  "Generates the function bodies corresponding to the arities in arglists.
+  Takes an additional name pertaining to an underlying function to capture
+  and delegate to in the function bodies."
+  [arglists closed-over-name]
   (map (fn [arglist]
-         (let [context (if-let [decl (varargs arglist)]
-                         (varargs-context arglist decl)
-                         (args-context    arglist))]           
-           (list (or (:arglist context arglist))
-                 (gen-body (merge context {:call (if (:decl context) [`apply f] [f])})))))
-       (or (->> v meta :arglists (sort-by count) seq)
+         (let [varargs-decl (find-varargs-decl arglist)]
+           (cond (map? varargs-decl) (kwargs-body     closed-over-name arglist)
+                 varargs-decl        (varargs-body    closed-over-name arglist)
+                 :default            (fixed-args-body closed-over-name arglist))))
+       (or arglists
            '([& args]))))
 
-(defn- gen-thunk
-  "Builds a thunk and its lexical environment used to instrument a function
-  and perform Spec checking at runtime."
-  [v]
-  (let [orig 'inner]
-    `(fn [~orig]
-       (fn
-         ~@(gen-bodies v orig)))))
+(defn- gen-kvs-emulation-wrapper
+  "Takes an argslist and builds a HOF that returns a function that flattens a
+  trailing map in the kwargs call case for a function of those signatures iff
+  the argslist contains an arity for keyword-arguments. Otherwise, returns
+  identity."
+  [arglists]
+  (if (has-kwargs? arglists)
+    (let [lexical-fn-name (gensym "inner")]
+      (eval
+       `(fn [~lexical-fn-name]
+          (fn ~@(gen-bodies arglists lexical-fn-name)))))
+    identity))
+
+(comment
+  ;; The thunk generated is below (with some gensym name cleanup for readability)
+  (fn [inner]
+    (fn
+      ([G__a] (inner G__a))
+      ([G__a G__b] (inner G__a G__b))
+      ([G__a G__b & G__kvs]
+       (apply inner G__a G__b (if (even? (count G__kvs))
+                                kvs
+                                (reduce-kv (fn [acc k v]
+                                             (->> acc (cons v) (cons k)))
+                                                     (butlast G__kvs)
+                                                     (last G__kvs)))))))
+)
 
 (defn- instrument-1
   [s opts]
@@ -236,9 +225,10 @@
             ospec (or (instrument-choose-spec spec s opts)
                       (throw (no-fspec v spec)))
             ofn (instrument-choose-fn to-wrap ospec s opts)
-            checked (spec-checking-fn v ofn ospec)
-            thunk (eval (gen-thunk v))
-            wrapped (thunk checked)]
+            arglists (->> v meta :arglists (sort-by count) seq)
+            checked (ensure-checking-fn v ofn ospec)
+            maybe-wrapper (gen-kvs-emulation-wrapper arglists)
+            wrapped (maybe-wrapper checked)]
         (alter-var-root v (constantly wrapped))
         (swap! instrumented-vars assoc v {:raw to-wrap :wrapped wrapped})
         (->sym v)))))
@@ -254,46 +244,3 @@
               (remove nil?))
         (collectionize sym-or-syms)))))
 
-(comment
-  (instrument-1 `add10 {})
-  (instrument-1 `kwargs-fn {})
-
-  (clojure.core/fn [inner]
-    (clojure.core/fn
-      ([opts] (inner opts))
-      ([a b] (inner a b))
-      ([a b & kvs]
-       (clojure.core/apply inner a b (if (clojure.core/even? (clojure.core/count kvs))
-                                       kvs
-                                       (clojure.core/concat
-                                        (clojure.core/butlast kvs)
-                                        (clojure.core/reduce
-                                         (clojure.core/fn [acc__10108__auto__ me__10109__auto__]
-                                           (clojure.core/conj acc__10108__auto__ (.getKey me__10109__auto__) (.getValue me__10109__auto__)))
-                                         []
-                                         (clojure.core/last kvs))))))))
-  
-  (instrument-local `kwargs-fn {})
-
-  (kwargs-fn 1)
-  (kwargs-fn 1 2)
-  (kwargs-fn 1 2 :a 1)
-  (kwargs-fn 1 2 :a 1 {:b 2})
-  (kwargs-fn 1 :B)
-  (kwargs-fn 1 2 :a 1 {:b :B})
-
-  (unstrument-local `kwargs-fn)
-
-  (defn proc [& args]
-    (if (odd? (count args))
-      (let [trail (last args)]
-        (if (map? trail)
-          (concat (butlast args) (-> trail seq flatten))
-          args))
-      args))
-
-  (proc :a 1 :b 2)
-  (proc :a 1 :b 2 {:c 3})
-  (proc)
-  
-)
