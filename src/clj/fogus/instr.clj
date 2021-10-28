@@ -173,18 +173,19 @@
     (list arglist
           `(~f ~@arglist))))
 
-(defn- gen-bodies
+(defn- build-flattener-struct
   "Generates the function bodies corresponding to the arities in arglists.
   Takes an additional name pertaining to an underlying function to capture
   and delegate to in the function bodies."
   [arglists closed-over-name]
-  (map (fn [arglist]
-         (let [varargs-decl (find-varargs-decl arglist)]
-           (cond (map? varargs-decl) (kwargs-body     closed-over-name arglist)
-                 varargs-decl        (varargs-body    closed-over-name arglist)
-                 :default            (fixed-args-body closed-over-name arglist))))
-       (or arglists
-           '([& args]))))
+  `(fn [~closed-over-name]
+     (fn ~@(map (fn [arglist]
+                  (let [varargs-decl (find-varargs-decl arglist)]
+                    (cond (map? varargs-decl) (kwargs-body     closed-over-name arglist)
+                          varargs-decl        (varargs-body    closed-over-name arglist)
+                          :default            (fixed-args-body closed-over-name arglist))))
+                (or arglists
+                    '([& args]))))))
 
 (defn- gen-kvs-emulation-wrapper
   "Takes an argslist and builds a HOF that returns a function that flattens a
@@ -193,10 +194,9 @@
   identity."
   [arglists]
   (if (has-kwargs? arglists)
-    (let [lexical-fn-name (gensym "inner")]
-      (eval
-       `(fn [~lexical-fn-name]
-          (fn ~@(gen-bodies arglists lexical-fn-name)))))
+    (let [lexical-fn-name (gensym "inner")
+          flattener-struct (build-flattener-struct arglists (gensym "inner"))]
+      (eval flattener-struct))
     identity))
 
 (comment
