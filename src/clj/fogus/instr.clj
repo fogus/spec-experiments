@@ -130,7 +130,11 @@
 (defn- has-kwargs? [arglists]
   (->> arglists (some find-varargs-decl) map?))
 
-(defn- unmappify [args]
+(defn- unmappify
+  "Takes an seq of aruguments and checks for a trailing element. If found, that
+  element is converted into a sequence of key->value pairs and concatenated onto
+  the preceeding arguments."
+  [args]
   (if (even? (count args))
      args
      (concat (butlast args)
