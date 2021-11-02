@@ -16,8 +16,9 @@
   true)
 
 (defn- ensure-checking-fn
-  "Builds a thunk and its lexical environment used to instrument a function
-  and perform Spec checking on its arguments at runtime."
+  "Takes a var, function to call, and a function spec and builds a thunk and its 
+  lexical environment used to instrument the function and perform Spec checking 
+  on its arguments at runtime."
   [v f fn-spec]
   (let [fn-spec (@#'s/maybe-spec fn-spec)
         conform! (fn [v role spec data args]
@@ -143,31 +144,32 @@
   [arglist]
   (->> arglist (take-while (complement #{'&})) (map (fn [_] (gensym))) vec))
 
-(defn- kwargs-body
-  "Builds a function body pertaining to a keyword arguments arity.
-  A varargs arity is built with a processing chain for the
-  incoming arguments that detects if a trailing argument exists and
-  attempts to convert it to a seq of key->val pairs. This seq is the
-  input to the underlying function prefixed by any named arguments."
+(defn- build-kwargs-body
+  "Takes a function and its kwargs arglist and builds a function body pertaining 
+  to a keyword arguments arity.
+  A varargs arity body calls a process on the incoming arguments that 
+  detects if a trailing argument exists and attempts to convert it to a 
+  seq of key->val pairs. This seq is the input to the underlying function 
+  prefixed by any named arguments."
   [f arglist]
   (let [alias (gensym "kvs")
         head-args (process-fixed-args arglist)]
     (list (conj head-args '& alias)
           `(apply ~f ~@head-args (@#'unmappify ~alias)))))
 
-(defn- varargs-body
-  "Builds a function body pertaining to a varargs arity. Builds the
-  call to the underlying function by supplying any named parameters
-  and the varargs parameter to apply."
+(defn- build-varargs-body
+  "Takes a function and its varargs arglist and builds a function body pertaining
+  to a varargs arity. Thecall to the underlying function is supplied any named 
+  parameters followed by the varargs parameter."
   [f arglist]
   (let [head-args (process-fixed-args arglist)
         alias  (gensym "args")]
     (list (conj head-args '& alias)
           `(apply ~f ~@head-args ~alias))))
 
-(defn- fixed-args-body
-  "Builds an argument context for fixed arities. The arguments
-  are taken directly from the parameter list."
+(defn- build-fixed-args-body
+  "Takes a function and an arglist and builds an argument context for fixed arities. 
+  The arguments are taken directly from the parameter list."
   [f arglist]
   (let [arglist (process-fixed-args arglist)]
     (list arglist
@@ -183,9 +185,9 @@
     `(fn [~closed-over-name]
        (fn ~@(map (fn [arglist]
                     (let [varargs-decl (find-varargs-decl arglist)]
-                      (cond (map? varargs-decl) (kwargs-body     closed-over-name arglist)
-                            varargs-decl        (varargs-body    closed-over-name arglist)
-                            :default            (fixed-args-body closed-over-name arglist))))
+                      (cond (map? varargs-decl) (build-kwargs-body     closed-over-name arglist)
+                            varargs-decl        (build-varargs-body    closed-over-name arglist)
+                            :default            (build-fixed-args-body closed-over-name arglist))))
                   (or arglists
                       '([& args])))))))
 
